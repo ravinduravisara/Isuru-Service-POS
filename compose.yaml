@@ -1,0 +1,69 @@
+name: isuru-pos-local
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: isuru-pos-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-isuru_pos_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-isuru_dev_pass_2026}
+      POSTGRES_DB: ${POSTGRES_DB:-isuru_pos}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-isuru_pos_user} -d ${POSTGRES_DB:-isuru_pos}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - isuru_network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: isuru-pos-backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: 5050
+      DATABASE_URL: postgresql://${POSTGRES_USER:-isuru_pos_user}:${POSTGRES_PASSWORD:-isuru_dev_pass_2026}@postgres:5432/${POSTGRES_DB:-isuru_pos}?schema=public
+      JWT_SECRET: ${JWT_SECRET:-isuru_service_center_super_secret_jwt_key_2026_production}
+      CLIENT_URL: http://localhost:${FRONTEND_PORT:-8081}
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-5050}:5050"
+    volumes:
+      - server_uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - isuru_network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: isuru-pos-frontend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-8081}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - isuru_network
+
+volumes:
+  postgres_data:
+    name: isuru_pos_local_pgdata
+  server_uploads:
+    name: isuru_pos_local_uploads
+
+networks:
+  isuru_network:
+    name: isuru_pos_local_net
+    driver: bridge
