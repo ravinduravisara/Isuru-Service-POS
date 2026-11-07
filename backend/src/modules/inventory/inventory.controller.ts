@@ -152,7 +152,7 @@ export async function createProduct(req: Request, res: Response, next: NextFunct
         const updated = await tx.product.update({
           where: { id: existing.id },
           data: {
-            quantity: existing.quantity + qty,
+            quantity: { increment: qty },
             unitPrice: price,
             buyingPrice: bPrice,
             supplierCode: supplierCode.trim() || existing.supplierCode,

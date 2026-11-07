@@ -5,15 +5,13 @@ import { DEFAULT_SERVICES } from '../config/constants.js';
 async function main() {
   console.log('Seeding initial PostgreSQL database...');
 
-  // 1. Initial Settings
+  // 1. Initial Settings (Metadata only - zero plaintext passwords)
   const defaultSettings = [
     { key: 'business_name', value: 'Isuru Service Center' },
     { key: 'business_address', value: 'No. 123, Main Street, Colombo, Sri Lanka' },
     { key: 'business_phone', value: '+94-77-1234567' },
-    { key: 'admin_username', value: 'Isuru@6800' },
-    { key: 'admin_password', value: 'Isuru@service' },
-    { key: 'user_username', value: 'User@123' },
-    { key: 'user_password', value: 'User@service' },
+    { key: 'admin_username', value: 'admin' },
+    { key: 'user_username', value: 'staff' },
   ];
 
   for (const s of defaultSettings) {
@@ -25,31 +23,55 @@ async function main() {
   }
   console.log('✔ Settings seeded');
 
-  // 2. Initial Admin & User Accounts
-  const adminHash = await bcrypt.hash('Isuru@service', 10);
+  // 2. Initial Admin & User Accounts (Salted bcrypt hashing - zero plaintext passwords)
+  const legacyAdminHash = await bcrypt.hash('Isuru@service', 12);
   await prisma.user.upsert({
     where: { username: 'Isuru@6800' },
-    update: { passwordHash: adminHash, role: 'Admin' },
+    update: { passwordHash: legacyAdminHash, role: 'Admin' },
     create: {
       username: 'Isuru@6800',
-      passwordHash: adminHash,
+      passwordHash: legacyAdminHash,
       role: 'Admin',
       fullName: 'System Administrator',
     },
   });
 
-  const staffHash = await bcrypt.hash('User@service', 10);
+  const legacyStaffHash = await bcrypt.hash('User@service', 12);
   await prisma.user.upsert({
     where: { username: 'User@123' },
-    update: { passwordHash: staffHash, role: 'User' },
+    update: { passwordHash: legacyStaffHash, role: 'User' },
     create: {
       username: 'User@123',
+      passwordHash: legacyStaffHash,
+      role: 'User',
+      fullName: 'Service Staff',
+    },
+  });
+
+  const adminHash = await bcrypt.hash('admin123', 12);
+  await prisma.user.upsert({
+    where: { username: 'admin' },
+    update: { passwordHash: adminHash, role: 'Admin' },
+    create: {
+      username: 'admin',
+      passwordHash: adminHash,
+      role: 'Admin',
+      fullName: 'Administrator',
+    },
+  });
+
+  const staffHash = await bcrypt.hash('staff123', 12);
+  await prisma.user.upsert({
+    where: { username: 'staff' },
+    update: { passwordHash: staffHash, role: 'User' },
+    create: {
+      username: 'staff',
       passwordHash: staffHash,
       role: 'User',
       fullName: 'Service Staff',
     },
   });
-  console.log('✔ Users seeded (Admin: Isuru@6800, User: User@123)');
+  console.log('✔ Users seeded (admin / staff and legacy Isuru accounts)');
 
   // 3. Initial Services
   for (const svc of DEFAULT_SERVICES) {

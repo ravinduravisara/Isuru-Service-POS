@@ -1,0 +1,108 @@
+name: Continuous Integration & Automated Testing
+
+on:
+  push:
+    branches: [ main, deployment ]
+  pull_request:
+    branches: [ main, deployment ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-build:
+    name: Build, Lint & Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: isuru_test_user
+          POSTGRES_PASSWORD: isuru_test_password
+          POSTGRES_DB: isuru_pos_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install Workspace Dependencies
+        run: |
+          npm ci || npm install
+          cd backend && npm ci || npm install
+          cd ../frontend && npm ci || npm install
+
+      - name: Generate Prisma ORM Client
+        run: |
+          cd backend
+          npx prisma generate
+
+      - name: Apply Database Migrations to Test PostgreSQL
+        env:
+          DATABASE_URL: postgresql://isuru_test_user:isuru_test_password@localhost:5432/isuru_pos_test?schema=public
+        run: |
+          cd backend
+          npx prisma migrate deploy
+
+      - name: Seed Test PostgreSQL Database
+        env:
+          DATABASE_URL: postgresql://isuru_test_user:isuru_test_password@localhost:5432/isuru_pos_test?schema=public
+        run: |
+          cd backend
+          npm run seed
+
+      - name: TypeScript Static Validation (Backend & Frontend)
+        run: |
+          echo "--> Validating Backend TypeScript..."
+          cd backend && npx tsc --noEmit
+          echo "--> Validating Frontend TypeScript..."
+          cd ../frontend && npx tsc --noEmit
+
+      - name: Run Integration API & Concurrency Tests
+        env:
+          NODE_ENV: test
+          DATABASE_URL: postgresql://isuru_test_user:isuru_test_password@localhost:5432/isuru_pos_test?schema=public
+          JWT_SECRET: github_actions_ci_cryptographically_secure_test_jwt_secret_64_bytes!
+          CORS_ORIGIN: http://localhost:5173,http://localhost:8081
+        run: |
+          cd backend
+          npm test
+
+      - name: Build Backend Production Distribution
+        run: |
+          npm run build:backend
+
+      - name: Build Frontend Production SPA
+        run: |
+          npm run build:frontend
+
+      - name: Validate Docker Production Configurations
+        run: |
+          if [ -f "compose.prod.yaml" ]; then
+            echo "--> Validating compose.prod.yaml..."
+            docker compose -f compose.prod.yaml config
+          fi
+          if [ -f "backend/Dockerfile" ]; then
+            echo "--> Building Backend Docker image test..."
+            docker build -t isuru-pos-backend-test backend/
+          fi
+          if [ -f "frontend/Dockerfile" ]; then
+            echo "--> Building Frontend Docker image test..."
+            docker build -t isuru-pos-frontend-test frontend/
+          fi

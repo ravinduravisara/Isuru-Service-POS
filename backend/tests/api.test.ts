@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
+import bcrypt from 'bcryptjs';
 import { app } from '../src/app.js';
 import { connectDB, disconnectDB, prisma } from '../src/config/database.js';
 
@@ -9,6 +10,21 @@ const timestamp = Date.now();
 
 beforeAll(async () => {
   await connectDB();
+
+  // Ensure accounts exist in the database with salted hashes
+  const adminHash = await bcrypt.hash('Isuru@service', 10);
+  await prisma.user.upsert({
+    where: { username: 'Isuru@6800' },
+    update: { passwordHash: adminHash, role: 'Admin' },
+    create: { username: 'Isuru@6800', passwordHash: adminHash, role: 'Admin', fullName: 'Administrator' },
+  });
+
+  const staffHash = await bcrypt.hash('User@service', 10);
+  await prisma.user.upsert({
+    where: { username: 'User@123' },
+    update: { passwordHash: staffHash, role: 'User' },
+    create: { username: 'User@123', passwordHash: staffHash, role: 'User', fullName: 'Service Staff' },
+  });
 
   // Obtain admin token
   const adminRes = await request(app)

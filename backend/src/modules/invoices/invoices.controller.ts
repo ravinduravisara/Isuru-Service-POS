@@ -106,18 +106,42 @@ export async function createInvoice(req: Request, res: Response, next: NextFunct
         let buyingPrice = 0;
 
         if (itemId) {
-          const product = await tx.product.findUnique({ where: { itemId } });
-          if (product) {
+          // Row lock product in PostgreSQL to serialize concurrent transactions and prevent race conditions
+          const lockedProducts: any[] = await tx.$queryRaw`
+            SELECT id, "itemId", quantity, "buyingPrice", "supplierCode"
+            FROM products
+            WHERE "itemId" = ${itemId}
+            FOR UPDATE
+          `;
+
+          if (lockedProducts.length > 0) {
+            const product = lockedProducts[0];
+            const availableQty = Number(product.quantity);
             buyingPrice = Number(product.buyingPrice) || 0;
 
-            // Concurrency-safe atomic deduction
-            const newQty = Math.max(0, product.quantity - qty);
-            await tx.product.update({
-              where: { id: product.id },
+            // Strict stock check: prevent overselling when negative stock is not permitted
+            if (availableQty < qty) {
+              throw new Error(
+                `Insufficient stock for item "${itemId}". Requested: ${qty}, Available: ${availableQty}.`
+              );
+            }
+
+            // Atomic conditional decrement in PostgreSQL
+            const deduction = await tx.product.updateMany({
+              where: {
+                id: product.id,
+                quantity: { gte: qty },
+              },
               data: {
-                quantity: newQty,
+                quantity: { decrement: qty },
               },
             });
+
+            if (deduction.count === 0) {
+              throw new Error(
+                `Concurrent transaction conflict: Unable to allocate ${qty} units of "${itemId}". Please retry.`
+              );
+            }
 
             // Record stock movement (negative for sale)
             await tx.stockMovement.create({
@@ -492,17 +516,12 @@ export async function deleteInvoice(req: Request, res: Response, next: NextFunct
       // Restore stock for inventory items sold on this invoice
       for (const item of invoice.items) {
         if (item.itemId) {
-          const product = await tx.product.findUnique({
+          await tx.product.updateMany({
             where: { itemId: item.itemId.trim().toUpperCase() },
+            data: {
+              quantity: { increment: item.qty },
+            },
           });
-          if (product) {
-            await tx.product.update({
-              where: { id: product.id },
-              data: {
-                quantity: product.quantity + item.qty,
-              },
-            });
-          }
         }
       }
 

@@ -1,9 +1,11 @@
 import { app } from './app.js';
 import { connectDB, disconnectDB } from './config/database.js';
 import { ENV } from './config/env.js';
+import { bootstrapAdminIfNeeded } from './modules/auth/auth.controller.js';
 
 async function startServer() {
   await connectDB();
+  await bootstrapAdminIfNeeded();
 
   const server = app.listen(ENV.PORT, () => {
     console.log(`====================================================`);

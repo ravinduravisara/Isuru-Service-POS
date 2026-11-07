@@ -1,0 +1,171 @@
+name: Production Deployment to Hostinger VPS
+
+on:
+  push:
+    branches: [ deployment ]
+    tags: [ 'v*.*.*' ]
+  workflow_dispatch:
+    inputs:
+      manual_rollback:
+        description: 'Set to true to roll back to the previously recorded release commit'
+        required: false
+        default: 'false'
+
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+
+jobs:
+  verify-and-test:
+    name: Run Pre-Deployment Verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: isuru_test_user
+          POSTGRES_PASSWORD: isuru_test_password
+          POSTGRES_DB: isuru_pos_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Deployment Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: |
+          npm ci || npm install
+          cd backend && npm ci || npm install
+          cd ../frontend && npm ci || npm install
+
+      - name: Validate TypeScript & Generate Prisma
+        env:
+          DATABASE_URL: postgresql://isuru_test_user:isuru_test_password@localhost:5432/isuru_pos_test?schema=public
+        run: |
+          cd backend
+          npx prisma generate
+          npx prisma migrate deploy
+          npx tsc --noEmit
+          cd ../frontend && npx tsc --noEmit
+
+      - name: Run Test Suite
+        env:
+          NODE_ENV: test
+          DATABASE_URL: postgresql://isuru_test_user:isuru_test_password@localhost:5432/isuru_pos_test?schema=public
+          JWT_SECRET: github_actions_ci_cryptographically_secure_test_jwt_secret_64_bytes!
+          CORS_ORIGIN: http://localhost:5173,http://localhost:8081
+        run: |
+          cd backend
+          npm test
+
+  deploy:
+    name: Deploy to Hostinger KVM 2 VPS (Port 8443)
+    needs: verify-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production
+      url: https://88.222.242.20:8443
+
+    steps:
+      - name: Checkout Repository for Release Tagging
+        uses: actions/checkout@v4
+
+      - name: Configure SSH Private Key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.VPS_SSH_KEY }}
+
+      - name: Execute Safe Zero-Downtime Deployment on VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST || '88.222.242.20' }}
+          VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+          VPS_USER: ${{ secrets.VPS_USER || 'deploy' }}
+          APP_DIR: /opt/isuru-pos
+          RELEASE_REF: ${{ github.sha }}
+        run: |
+          echo "================================================================="
+          echo "Starting automated deployment to ${VPS_USER}@${VPS_HOST}:${VPS_PORT}"
+          echo "Commit SHA: ${RELEASE_REF}"
+          echo "================================================================="
+
+          # SSH with strict host key checking disabled for automated pipeline
+          ssh -o StrictHostKeyChecking=no -p "${VPS_PORT}" "${VPS_USER}@${VPS_HOST}" bash -s << 'EOF'
+            set -euo pipefail
+            APP_DIR="/opt/isuru-pos"
+
+            if [ ! -d "${APP_DIR}" ]; then
+              echo "ERROR: Target application directory ${APP_DIR} does not exist on VPS."
+              echo "Please follow DEPLOYMENT.md Section 3 for initial clone setup."
+              exit 1
+            fi
+
+            cd "${APP_DIR}"
+
+            echo "-> [1/6] Storing current commit for automated rollback..."
+            PREVIOUS_COMMIT="$(git rev-parse HEAD || echo '')"
+            echo "${PREVIOUS_COMMIT}" > .previous_deployment_commit
+
+            echo "-> [2/6] Running pre-deployment automated database backup..."
+            if [ -x "./scripts/backup-postgres.sh" ]; then
+              ./scripts/backup-postgres.sh || echo "⚠ Pre-deployment backup notice: Continuing deployment."
+            fi
+
+            echo "-> [3/6] Fetching latest deployment branch..."
+            git fetch origin deployment
+            git reset --hard origin/deployment
+
+            echo "-> [4/6] Building production Docker containers..."
+            docker compose -f compose.prod.yaml build
+
+            echo "-> [5/6] Applying Prisma migrations & restarting services gracefully..."
+            # Launch database first to ensure healthcheck passes before backend
+            docker compose -f compose.prod.yaml up -d postgres
+            docker compose -f compose.prod.yaml up -d --remove-orphans
+
+            echo "-> [6/6] Verifying deployment health checks..."
+            # Wait up to 60 seconds for backend and nginx to report healthy
+            MAX_ATTEMPTS=12
+            ATTEMPT=1
+            SUCCESS=0
+
+            while [ ${ATTEMPT} -le ${MAX_ATTEMPTS} ]; do
+              echo "   Healthcheck attempt ${ATTEMPT}/${MAX_ATTEMPTS}..."
+              if curl -k -s -f --max-time 5 https://127.0.0.1:8443/api/v1/health | grep -q "ok"; then
+                echo "✔ Health check passed: Service is live and responding with 200 OK."
+                SUCCESS=1
+                break
+              fi
+              sleep 5
+              ATTEMPT=$((ATTEMPT + 1))
+            done
+
+            if [ ${SUCCESS} -ne 1 ]; then
+              echo "❌ ERROR: Health check failed! Initiating automated rollback..."
+              if [ -n "${PREVIOUS_COMMIT}" ]; then
+                echo "   Reverting to commit ${PREVIOUS_COMMIT}..."
+                git reset --hard "${PREVIOUS_COMMIT}"
+                docker compose -f compose.prod.yaml up -d --build
+                echo "✔ Rollback completed to ${PREVIOUS_COMMIT}."
+              fi
+              exit 1
+            fi
+
+            echo "================================================================="
+            echo "✔ Deployment to https://88.222.242.20:8443 completed successfully!"
+            echo "================================================================="
+          EOF

@@ -35,11 +35,25 @@ app.use((req, res, next) => {
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (like mobile apps, curl, or same-origin)
-      if (!origin || origin.includes('localhost') || origin.includes('127.0.0.1')) {
+      // Allow requests with no origin (e.g. mobile apps, curl, server-to-server)
+      if (!origin) {
+        return callback(null, true);
+      }
+
+      // Validate against configured allowed origins
+      const isAllowed = ENV.ALLOWED_ORIGINS.some((allowed) => {
+        if (allowed === origin) return true;
+        // In development/test mode, allow localhost and loopback interfaces
+        if (!ENV.IS_PRODUCTION && (origin.includes('localhost') || origin.includes('127.0.0.1'))) {
+          return true;
+        }
+        return false;
+      });
+
+      if (isAllowed) {
         callback(null, true);
       } else {
-        callback(null, true); // Permissive for local offline use
+        callback(new Error(`CORS Error: Origin ${origin} is not authorized.`));
       }
     },
     credentials: true,

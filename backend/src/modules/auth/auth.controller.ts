@@ -4,6 +4,105 @@ import bcrypt from 'bcryptjs';
 import { prisma } from '../../config/prisma.js';
 import { ENV } from '../../config/env.js';
 
+/**
+ * First-run bootstrap check: automatically provision initial Administrator if zero users exist.
+ * Uses environment configuration (INITIAL_ADMIN_USERNAME / INITIAL_ADMIN_PASSWORD) with bcrypt hashing.
+ */
+export async function bootstrapAdminIfNeeded(): Promise<void> {
+  try {
+    const userCount = await prisma.user.count();
+    if (userCount === 0) {
+      const username = ENV.INITIAL_ADMIN_USERNAME.trim();
+      const password = ENV.INITIAL_ADMIN_PASSWORD;
+      const passwordHash = await bcrypt.hash(password, 12);
+
+      await prisma.user.create({
+        data: {
+          username,
+          passwordHash,
+          role: 'Admin',
+          fullName: 'System Administrator',
+        },
+      });
+
+      console.log(`✔ [Security Bootstrap] Initial Administrator account established for username: ${username}`);
+    }
+  } catch (error) {
+    console.error('⚠ [Security Bootstrap] Failed to verify or provision initial administrator:', error);
+  }
+}
+
+/**
+ * Public First-Run Administrator Setup Endpoint (POST /api/v1/auth/setup)
+ * Strictly permitted ONLY when user count is 0. Once any user exists, permanently locked (403).
+ */
+export async function setupInitialAdmin(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const existingUsers = await prisma.user.count();
+    if (existingUsers > 0) {
+      res.status(403).json({
+        success: false,
+        error: 'Administrator account already established. Initial setup is locked.',
+      });
+      return;
+    }
+
+    const { username, password, fullName } = req.body;
+    if (!username || !password) {
+      res.status(400).json({ success: false, error: 'Username and password are required.' });
+      return;
+    }
+
+    if (password.length < 8) {
+      res.status(400).json({ success: false, error: 'Password must be at least 8 characters long.' });
+      return;
+    }
+
+    const passwordHash = await bcrypt.hash(password, 12);
+    const newAdmin = await prisma.user.create({
+      data: {
+        username: username.trim(),
+        passwordHash,
+        role: 'Admin',
+        fullName: fullName?.trim() || 'System Administrator',
+      },
+    });
+
+    const token = jwt.sign(
+      { userId: newAdmin.id, username: newAdmin.username, role: newAdmin.role },
+      ENV.JWT_SECRET,
+      { expiresIn: (ENV.JWT_EXPIRES_IN as any) || '7d' }
+    );
+
+    res.cookie('isuru_token', token, {
+      httpOnly: true,
+      secure: ENV.IS_PRODUCTION,
+      sameSite: 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Initial Administrator created successfully.',
+      token,
+      user: {
+        id: newAdmin.id,
+        _id: newAdmin.id,
+        username: newAdmin.username,
+        role: newAdmin.role,
+        fullName: newAdmin.fullName,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Secure User Authentication (POST /api/v1/auth/login)
+ * Strictly checks registered users in database with bcrypt hashing.
+ * ZERO fallback credentials or plaintext settings checks.
+ */
 export async function login(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const { username, password } = req.body;
@@ -13,63 +112,19 @@ export async function login(req: Request, res: Response, next: NextFunction): Pr
       return;
     }
 
-    // 1. Check existing User record in DB
-    let user = await prisma.user.findUnique({
+    const user = await prisma.user.findUnique({
       where: { username: username.trim() },
     });
 
-    let authenticated = false;
-    let role = 'User';
-
-    if (user) {
-      authenticated = await bcrypt.compare(password, user.passwordHash);
-      role = user.role;
-    } else {
-      // 2. Fallback to app_settings or defaults
-      const settings = await prisma.setting.findMany({
-        where: {
-          key: {
-            in: ['admin_username', 'admin_password', 'user_username', 'user_password'],
-          },
-        },
-      });
-
-      const setMap = new Map<string, string>();
-      settings.forEach((s) => setMap.set(s.key, s.value));
-
-      const adminUser = setMap.get('admin_username') || 'Isuru@6800';
-      const adminPass = setMap.get('admin_password') || 'Isuru@service';
-      const userUser = setMap.get('user_username') || 'User@123';
-      const userPass = setMap.get('user_password') || 'User@service';
-
-      if (username === adminUser && password === adminPass) {
-        authenticated = true;
-        role = 'Admin';
-        const hash = await bcrypt.hash(password, 10);
-        user = await prisma.user.create({
-          data: {
-            username: adminUser,
-            passwordHash: hash,
-            role: 'Admin',
-            fullName: 'Administrator',
-          },
-        });
-      } else if (username === userUser && password === userPass) {
-        authenticated = true;
-        role = 'User';
-        const hash = await bcrypt.hash(password, 10);
-        user = await prisma.user.create({
-          data: {
-            username: userUser,
-            passwordHash: hash,
-            role: 'User',
-            fullName: 'Service Staff',
-          },
-        });
-      }
+    if (!user) {
+      // Use constant-time dummy compare to prevent user enumeration timing attacks
+      await bcrypt.compare(password, '$2a$12$e8p4F680l1U268Vv9xWjxeaR1U44w97a7M3X6Lh5X9VbC7yPzGgTe');
+      res.status(401).json({ success: false, error: 'Invalid username or password.' });
+      return;
     }
 
-    if (!authenticated || !user) {
+    const authenticated = await bcrypt.compare(password, user.passwordHash);
+    if (!authenticated) {
       res.status(401).json({ success: false, error: 'Invalid username or password.' });
       return;
     }
@@ -78,13 +133,13 @@ export async function login(req: Request, res: Response, next: NextFunction): Pr
     const token = jwt.sign(
       { userId: user.id, username: user.username, role: user.role },
       ENV.JWT_SECRET,
-      { expiresIn: '7d' }
+      { expiresIn: (ENV.JWT_EXPIRES_IN as any) || '7d' }
     );
 
     // Set HTTP-only cookie
     res.cookie('isuru_token', token, {
       httpOnly: true,
-      secure: ENV.NODE_ENV === 'production',
+      secure: ENV.IS_PRODUCTION,
       sameSite: 'lax',
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     });

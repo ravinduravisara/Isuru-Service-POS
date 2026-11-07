@@ -130,11 +130,11 @@ export async function createSupplyInvoice(req: Request, res: Response, next: Nex
         },
       });
 
-      // 3. Increment stock quantity and update buying price
+      // 3. Increment stock quantity atomically and update buying price
       await tx.product.update({
         where: { id: product.id },
         data: {
-          quantity: product.quantity + qty,
+          quantity: { increment: qty },
           buyingPrice: bPrice,
           supplierCode: supCode,
           paymentMethod: pStatus,
