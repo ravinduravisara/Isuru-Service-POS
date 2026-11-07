@@ -433,7 +433,7 @@ export const SettingsPage: React.FC = () => {
               <div>
                 <h5 className="text-xs font-bold text-rose-900">Factory Reset / Purge All Data</h5>
                 <p className="text-[11px] text-rose-700 mt-0.5">
-                  Deletes all customer profiles, vehicles, invoices, parts, and supplier data.
+                  Deletes all customer profiles, vehicles, invoices, inventory parts, and supplier data. (Service rates catalog, vehicle types, presets, and login accounts are safely preserved).
                 </p>
               </div>
               <button
@@ -459,6 +459,12 @@ export const SettingsPage: React.FC = () => {
         subtitle="This action cannot be undone"
       >
         <div className="space-y-4">
+          {purgeModalType === 'all' && (
+            <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-[11px] text-amber-800">
+              ℹ️ <strong>Note:</strong> Your Service &amp; Labour Rate Catalog, Vehicle Categories, Presets, and Admin/User logins will <strong>NOT</strong> be deleted.
+            </div>
+          )}
+
           <p className="text-xs text-slate-600">
             Please type <span className="font-mono font-bold text-rose-600">CONFIRM PURGE</span> below to confirm the wipe operation.
           </p>
