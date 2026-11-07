@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { Service } from '../../models/Service.js';
+import { prisma } from '../../config/prisma.js';
 import { DEFAULT_SERVICES } from '../../config/constants.js';
 
 export async function getServices(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -7,44 +7,60 @@ export async function getServices(req: Request, res: Response, next: NextFunctio
     const category = (req.query.category as string)?.trim();
     const search = (req.query.search as string)?.trim();
 
-    const filter: any = {};
+    // Auto-seed if completely empty
+    const count = await prisma.service.count();
+    if (count === 0) {
+      await prisma.service.createMany({
+        data: DEFAULT_SERVICES.map((s) => ({
+          category: s.category,
+          name: s.name,
+          price: s.price,
+          description: '',
+        })),
+        skipDuplicates: true,
+      });
+    }
+
+    const where: any = {};
+
     if (category && category !== 'All') {
-      // If a vehicle type is provided, return that vehicle type's services + 'Others'
       if (category.toLowerCase() !== 'others') {
-        filter.$or = [
-          { category: new RegExp(`^${category}$`, 'i') },
+        where.OR = [
+          { category: { equals: category, mode: 'insensitive' } },
           { category: 'Others' },
         ];
       } else {
-        filter.category = 'Others';
+        where.category = 'Others';
       }
     }
 
     if (search) {
-      filter.$and = filter.$and || [];
-      filter.$and.push({
-        $or: [
-          { name: { $regex: search, $options: 'i' } },
-          { description: { $regex: search, $options: 'i' } },
+      const searchCondition = {
+        OR: [
+          { name: { contains: search, mode: 'insensitive' } },
+          { description: { contains: search, mode: 'insensitive' } },
         ],
-      });
+      };
+      if (where.OR) {
+        where.AND = [searchCondition];
+      } else {
+        where.OR = searchCondition.OR;
+      }
     }
 
-    // Auto-seed if completely empty
-    const count = await Service.countDocuments();
-    if (count === 0) {
-      await Service.insertMany(DEFAULT_SERVICES.map((s) => ({ ...s, description: '' })));
-    }
-
-    const services = await Service.find(filter).sort({ category: 1, name: 1 });
+    const services = await prisma.service.findMany({
+      where,
+      orderBy: [{ category: 'asc' }, { name: 'asc' }],
+    });
 
     res.json({
       success: true,
       services: services.map((s) => ({
-        id: s._id,
+        id: s.id,
+        _id: s.id,
         category: s.category,
         name: s.name,
-        price: s.price,
+        price: Number(s.price),
         description: s.description || '',
       })),
     });
@@ -68,26 +84,29 @@ export async function createService(req: Request, res: Response, next: NextFunct
       return;
     }
 
-    const service = await Service.create({
-      category: category || 'Others',
-      name: name.trim(),
-      price: priceNum,
-      description: (description || '').trim(),
+    const service = await prisma.service.create({
+      data: {
+        category: category || 'Others',
+        name: name.trim(),
+        price: priceNum,
+        description: (description || '').trim(),
+      },
     });
 
     res.status(201).json({
       success: true,
       message: 'Service created successfully.',
       service: {
-        id: service._id,
+        id: service.id,
+        _id: service.id,
         category: service.category,
         name: service.name,
-        price: service.price,
+        price: Number(service.price),
         description: service.description,
       },
     });
   } catch (error: any) {
-    if (error.code === 11000) {
+    if (error.code === 'P2002') {
       res.status(409).json({ success: false, error: 'This service already exists in this category.' });
       return;
     }
@@ -97,7 +116,7 @@ export async function createService(req: Request, res: Response, next: NextFunct
 
 export async function updateService(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const { category, name, price, description } = req.body;
 
     if (!name || !name.trim()) {
@@ -111,36 +130,35 @@ export async function updateService(req: Request, res: Response, next: NextFunct
       return;
     }
 
-    const service = await Service.findByIdAndUpdate(
-      id,
-      {
+    const service = await prisma.service.update({
+      where: { id },
+      data: {
         category: category || 'Others',
         name: name.trim(),
         price: priceNum,
         description: (description || '').trim(),
       },
-      { new: true }
-    );
-
-    if (!service) {
-      res.status(404).json({ success: false, error: 'Service not found.' });
-      return;
-    }
+    });
 
     res.json({
       success: true,
       message: 'Service updated successfully.',
       service: {
-        id: service._id,
+        id: service.id,
+        _id: service.id,
         category: service.category,
         name: service.name,
-        price: service.price,
+        price: Number(service.price),
         description: service.description,
       },
     });
   } catch (error: any) {
-    if (error.code === 11000) {
+    if (error.code === 'P2002') {
       res.status(409).json({ success: false, error: 'This service already exists in this category.' });
+      return;
+    }
+    if (error.code === 'P2025') {
+      res.status(404).json({ success: false, error: 'Service not found.' });
       return;
     }
     next(error);
@@ -149,15 +167,17 @@ export async function updateService(req: Request, res: Response, next: NextFunct
 
 export async function deleteService(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { id } = req.params;
-    const service = await Service.findByIdAndDelete(id);
-    if (!service) {
+    const id = req.params.id as string;
+    await prisma.service.delete({
+      where: { id },
+    });
+
+    res.json({ success: true, message: 'Service deleted successfully.' });
+  } catch (error: any) {
+    if (error.code === 'P2025') {
       res.status(404).json({ success: false, error: 'Service not found.' });
       return;
     }
-
-    res.json({ success: true, message: 'Service deleted successfully.' });
-  } catch (error) {
     next(error);
   }
 }

@@ -1,34 +1,32 @@
 import { Request, Response, NextFunction } from 'express';
-import { Customer } from '../../models/Customer.js';
-import { Vehicle } from '../../models/Vehicle.js';
-import { Invoice } from '../../models/Invoice.js';
+import { prisma } from '../../config/prisma.js';
 
 export async function getCustomers(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const search = (req.query.search as string)?.trim() || '';
 
-    const filter: any = {};
-    if (search) {
-      filter.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { phone: { $regex: search, $options: 'i' } },
-      ];
-    }
-
-    const customers = await Customer.find(filter).sort({ name: 1 });
-
-    // Aggregate vehicle counts
-    const vehicleCounts = await Vehicle.aggregate([
-      { $group: { _id: '$customerId', count: { $sum: 1 } } },
-    ]);
-    const countsMap = new Map<string, number>();
-    vehicleCounts.forEach((vc) => countsMap.set(vc._id.toString(), vc.count));
+    const customers = await prisma.customer.findMany({
+      where: search
+        ? {
+            OR: [
+              { name: { contains: search, mode: 'insensitive' } },
+              { phone: { contains: search, mode: 'insensitive' } },
+            ],
+          }
+        : undefined,
+      include: {
+        _count: {
+          select: { vehicles: true },
+        },
+      },
+      orderBy: { name: 'asc' },
+    });
 
     const result = customers.map((c) => ({
-      id: c._id,
+      id: c.id,
       name: c.name,
       phone: c.phone || '',
-      vehiclesCount: countsMap.get(c._id.toString()) || 0,
+      vehiclesCount: c._count.vehicles,
       createdAt: c.createdAt,
     }));
 
@@ -49,34 +47,35 @@ export async function searchCustomers(req: Request, res: Response, next: NextFun
       return;
     }
 
-    const customers = await Customer.find({
-      $or: [
-        { name: { $regex: q, $options: 'i' } },
-        { phone: { $regex: q, $options: 'i' } },
-      ],
-    })
-      .limit(10)
-      .sort({ name: 1 });
-
-    const customerIds = customers.map((c) => c._id);
-    const vehicles = await Vehicle.find({ customerId: { $in: customerIds } });
-
-    const customerVehiclesMap = new Map<string, any[]>();
-    vehicles.forEach((v) => {
-      const cid = v.customerId.toString();
-      if (!customerVehiclesMap.has(cid)) customerVehiclesMap.set(cid, []);
-      customerVehiclesMap.get(cid)!.push({
-        id: v._id,
-        vehicleNo: v.vehicleNo,
-        vehicleType: v.vehicleType,
-      });
+    const customers = await prisma.customer.findMany({
+      where: {
+        OR: [
+          { name: { contains: q, mode: 'insensitive' } },
+          { phone: { contains: q, mode: 'insensitive' } },
+        ],
+      },
+      take: 10,
+      orderBy: { name: 'asc' },
+      include: {
+        vehicles: {
+          select: {
+            id: true,
+            vehicleNo: true,
+            vehicleType: true,
+          },
+        },
+      },
     });
 
     const result = customers.map((c) => ({
-      id: c._id,
+      id: c.id,
       name: c.name,
       phone: c.phone,
-      vehicles: customerVehiclesMap.get(c._id.toString()) || [],
+      vehicles: c.vehicles.map((v) => ({
+        id: v.id,
+        vehicleNo: v.vehicleNo,
+        vehicleType: v.vehicleType,
+      })),
     }));
 
     res.json({ success: true, customers: result });
@@ -87,28 +86,57 @@ export async function searchCustomers(req: Request, res: Response, next: NextFun
 
 export async function getCustomerById(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { id } = req.params;
-    const customer = await Customer.findById(id);
+    const id = req.params.id as string;
+    const customer = await prisma.customer.findUnique({
+      where: { id },
+      include: {
+        vehicles: {
+          orderBy: { vehicleNo: 'asc' },
+        },
+        invoices: {
+          orderBy: { dateTime: 'desc' },
+        },
+      },
+    });
+
     if (!customer) {
       res.status(404).json({ success: false, error: 'Customer not found.' });
       return;
     }
 
-    const [vehicles, invoices] = await Promise.all([
-      Vehicle.find({ customerId: customer._id }).sort({ vehicleNo: 1 }),
-      Invoice.find({ customerId: customer._id }).sort({ dateTime: -1 }),
-    ]);
-
     res.json({
       success: true,
       customer: {
-        id: customer._id,
+        id: customer.id,
         name: customer.name,
         phone: customer.phone,
         createdAt: customer.createdAt,
       },
-      vehicles,
-      invoices,
+      vehicles: customer.vehicles,
+      invoices: customer.invoices,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function getCustomerVehicles(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const id = req.params.id as string;
+    const vehicles = await prisma.vehicle.findMany({
+      where: { customerId: id },
+      orderBy: { vehicleNo: 'asc' },
+    });
+
+    res.json({
+      success: true,
+      vehicles: vehicles.map((v) => ({
+        id: v.id,
+        customerId: v.customerId,
+        vehicleNo: v.vehicleNo,
+        vehicleType: v.vehicleType,
+        createdAt: v.createdAt,
+      })),
     });
   } catch (error) {
     next(error);
@@ -123,16 +151,18 @@ export async function createCustomer(req: Request, res: Response, next: NextFunc
       return;
     }
 
-    const customer = await Customer.create({
-      name: name.trim(),
-      phone: (phone || '').trim(),
+    const customer = await prisma.customer.create({
+      data: {
+        name: name.trim(),
+        phone: (phone || '').trim(),
+      },
     });
 
     res.status(201).json({
       success: true,
       message: 'Customer registered successfully.',
       customer: {
-        id: customer._id,
+        id: customer.id,
         name: customer.name,
         phone: customer.phone,
       },
@@ -144,7 +174,7 @@ export async function createCustomer(req: Request, res: Response, next: NextFunc
 
 export async function updateCustomer(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const { name, phone } = req.body;
 
     if (!name || !name.trim()) {
@@ -152,42 +182,45 @@ export async function updateCustomer(req: Request, res: Response, next: NextFunc
       return;
     }
 
-    const customer = await Customer.findByIdAndUpdate(
-      id,
-      { name: name.trim(), phone: (phone || '').trim(), updatedAt: new Date() },
-      { new: true }
-    );
-
-    if (!customer) {
-      res.status(404).json({ success: false, error: 'Customer not found.' });
-      return;
-    }
+    const customer = await prisma.customer.update({
+      where: { id },
+      data: {
+        name: name.trim(),
+        phone: (phone || '').trim(),
+      },
+    });
 
     res.json({
       success: true,
       message: 'Customer updated successfully.',
       customer: {
-        id: customer._id,
+        id: customer.id,
         name: customer.name,
         phone: customer.phone,
       },
     });
-  } catch (error) {
+  } catch (error: any) {
+    if (error.code === 'P2025') {
+      res.status(404).json({ success: false, error: 'Customer not found.' });
+      return;
+    }
     next(error);
   }
 }
 
 export async function deleteCustomer(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { id } = req.params;
-    const customer = await Customer.findByIdAndDelete(id);
-    if (!customer) {
+    const id = req.params.id as string;
+    await prisma.customer.delete({
+      where: { id },
+    });
+
+    res.json({ success: true, message: 'Customer deleted successfully.' });
+  } catch (error: any) {
+    if (error.code === 'P2025') {
       res.status(404).json({ success: false, error: 'Customer not found.' });
       return;
     }
-
-    res.json({ success: true, message: 'Customer deleted successfully.' });
-  } catch (error) {
     next(error);
   }
 }

@@ -1,27 +1,27 @@
 import { Request, Response, NextFunction } from 'express';
-import { SupplyInvoice } from '../../models/SupplyInvoice.js';
-import { Product } from '../../models/Product.js';
-import { Supplier } from '../../models/Supplier.js';
-import { StockMovement } from '../../models/StockMovement.js';
+import { prisma } from '../../config/prisma.js';
 
 export async function getSupplyInvoices(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const search = (req.query.search as string)?.trim() || '';
     const paymentStatus = (req.query.paymentStatus as string)?.trim() || '';
 
-    const filter: any = {};
+    const where: any = {};
     if (search) {
-      filter.$or = [
-        { invoiceNo: { $regex: search, $options: 'i' } },
-        { supplierCode: { $regex: search, $options: 'i' } },
-        { itemId: { $regex: search, $options: 'i' } },
+      where.OR = [
+        { invoiceNo: { contains: search, mode: 'insensitive' } },
+        { supplierCode: { contains: search, mode: 'insensitive' } },
+        { itemId: { contains: search, mode: 'insensitive' } },
       ];
     }
     if (paymentStatus && paymentStatus !== 'All') {
-      filter.paymentStatus = paymentStatus;
+      where.paymentStatus = { equals: paymentStatus, mode: 'insensitive' };
     }
 
-    const invoices = await SupplyInvoice.find(filter).sort({ createdAt: -1, _id: -1 });
+    const invoices = await prisma.supplyInvoice.findMany({
+      where,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    });
 
     let totalAmount = 0;
     let cashTotal = 0;
@@ -29,18 +29,20 @@ export async function getSupplyInvoices(req: Request, res: Response, next: NextF
     let chequeTotal = 0;
 
     const formatted = invoices.map((inv) => {
-      const lineTotal = inv.quantity * inv.buyingPrice;
+      const buyingPrice = Number(inv.buyingPrice);
+      const lineTotal = inv.quantity * buyingPrice;
       totalAmount += lineTotal;
-      if (inv.paymentStatus === 'Credit') creditTotal += lineTotal;
-      else if (inv.paymentStatus === 'Cheque') chequeTotal += lineTotal;
+      if (inv.paymentStatus.toLowerCase() === 'credit') creditTotal += lineTotal;
+      else if (inv.paymentStatus.toLowerCase() === 'cheque') chequeTotal += lineTotal;
       else cashTotal += lineTotal;
 
       return {
-        id: inv._id,
+        id: inv.id,
+        _id: inv.id,
         invoiceNo: inv.invoiceNo,
         supplierCode: inv.supplierCode,
         itemId: inv.itemId,
-        buyingPrice: inv.buyingPrice,
+        buyingPrice,
         quantity: inv.quantity,
         total: lineTotal,
         paymentStatus: inv.paymentStatus,
@@ -58,10 +60,10 @@ export async function getSupplyInvoices(req: Request, res: Response, next: NextF
       success: true,
       invoices: formatted,
       summary: {
-        totalAmount,
-        cashTotal,
-        creditTotal,
-        chequeTotal,
+        totalAmount: Math.round(totalAmount * 100) / 100,
+        cashTotal: Math.round(cashTotal * 100) / 100,
+        creditTotal: Math.round(creditTotal * 100) / 100,
+        chequeTotal: Math.round(chequeTotal * 100) / 100,
       },
     });
   } catch (error) {
@@ -96,75 +98,90 @@ export async function createSupplyInvoice(req: Request, res: Response, next: Nex
       return;
     }
 
-    // 1. Check item exists in inventory
-    const product = await Product.findOne({ itemId: itemId.trim().toUpperCase() });
-    if (!product) {
-      res.status(404).json({ success: false, error: `Item ID "${itemId}" not found in inventory. Please add it to inventory first.` });
-      return;
-    }
-
-    const now = new Date();
+    const cleanItemId = itemId.trim().toUpperCase();
     const supCode = supplierCode.trim().toUpperCase();
     const pStatus = paymentStatus === 'Credit' || paymentStatus === 'Cheque' ? paymentStatus : 'Cash';
+    const now = new Date();
 
-    // 2. Create Supply Invoice
-    const supplyInvoice = await SupplyInvoice.create({
-      invoiceNo: invoiceNo.trim(),
-      supplierCode: supCode,
-      itemId: product.itemId,
-      buyingPrice: bPrice,
-      quantity: qty,
-      paymentStatus: pStatus,
-      chequeNo: pStatus === 'Cheque' ? chequeNo.trim() : '',
-      branchCode: pStatus === 'Cheque' ? branchCode.trim() : '',
-      bankCode: pStatus === 'Cheque' ? bankCode.trim() : '',
-      valueDate: pStatus === 'Cheque' && valueDate ? new Date(valueDate) : null,
-      createdAt: now,
-    });
+    const createdSupplyInvoice = await prisma.$transaction(async (tx) => {
+      // 1. Check item exists in inventory
+      const product = await tx.product.findUnique({
+        where: { itemId: cleanItemId },
+      });
 
-    // 3. Increment stock quantity and update buying price in inventory
-    product.quantity += qty;
-    product.buyingPrice = bPrice;
-    product.supplierCode = supCode;
-    product.paymentMethod = pStatus;
-    product.updatedAt = now;
-    await product.save();
+      if (!product) {
+        throw new Error(`Item ID "${itemId}" not found in inventory. Please add it to inventory first.`);
+      }
 
-    // 4. Record stock movement
-    await StockMovement.create({
-      itemId: product.itemId,
-      supplierCode: supCode,
-      quantity: qty,
-      unitPrice: bPrice,
-      buyingPrice: bPrice,
-      paymentMethod: pStatus,
-      movedAt: now,
-    });
+      // 2. Create Supply Invoice
+      const supplyInvoice = await tx.supplyInvoice.create({
+        data: {
+          invoiceNo: invoiceNo.trim(),
+          supplierCode: supCode,
+          itemId: product.itemId,
+          buyingPrice: bPrice,
+          quantity: qty,
+          paymentStatus: pStatus,
+          chequeNo: pStatus === 'Cheque' ? chequeNo.trim() : '',
+          branchCode: pStatus === 'Cheque' ? branchCode.trim() : '',
+          bankCode: pStatus === 'Cheque' ? bankCode.trim() : '',
+          valueDate: pStatus === 'Cheque' && valueDate ? new Date(valueDate) : null,
+          createdAt: now,
+        },
+      });
 
-    // 5. Ensure Supplier exists
-    await Supplier.findOneAndUpdate(
-      { supplierCode: supCode },
-      {
-        $setOnInsert: {
+      // 3. Increment stock quantity and update buying price
+      await tx.product.update({
+        where: { id: product.id },
+        data: {
+          quantity: product.quantity + qty,
+          buyingPrice: bPrice,
+          supplierCode: supCode,
+          paymentMethod: pStatus,
+        },
+      });
+
+      // 4. Record stock movement
+      await tx.stockMovement.create({
+        data: {
+          itemId: product.itemId,
+          supplierCode: supCode,
+          quantity: qty,
+          unitPrice: bPrice,
+          buyingPrice: bPrice,
+          paymentMethod: pStatus,
+          movedAt: now,
+        },
+      });
+
+      // 5. Ensure Supplier exists
+      await tx.supplier.upsert({
+        where: { supplierCode: supCode },
+        update: {},
+        create: {
           supplierCode: supCode,
           name: supCode,
           contact: '',
-          cashTotal: 0,
-          creditTotal: 0,
-          chequeTotal: 0,
           invoice: invoiceNo.trim(),
-          createdAt: now,
         },
-      },
-      { upsert: true, new: true }
-    );
+      });
+
+      return supplyInvoice;
+    });
 
     res.status(201).json({
       success: true,
       message: 'Supply invoice recorded and inventory updated successfully.',
-      supplyInvoice,
+      supplyInvoice: {
+        ...createdSupplyInvoice,
+        buyingPrice: Number(createdSupplyInvoice.buyingPrice),
+      },
     });
-  } catch (error) {
+  } catch (error: any) {
+    if (error.message?.includes('not found in inventory')) {
+      res.status(404).json({ success: false, error: error.message });
+      return;
+    }
     next(error);
   }
 }
@@ -178,10 +195,15 @@ export async function settleSupplyInvoices(req: Request, res: Response, next: Ne
     }
 
     const now = new Date();
-    await SupplyInvoice.updateMany(
-      { _id: { $in: invoiceIds }, settledAt: null },
-      { $set: { settledAt: now } }
-    );
+    await prisma.supplyInvoice.updateMany({
+      where: {
+        id: { in: invoiceIds },
+        settledAt: null,
+      },
+      data: {
+        settledAt: now,
+      },
+    });
 
     res.json({
       success: true,

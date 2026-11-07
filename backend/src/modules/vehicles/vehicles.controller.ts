@@ -1,21 +1,35 @@
 import { Request, Response, NextFunction } from 'express';
-import { Vehicle } from '../../models/Vehicle.js';
-import { Customer } from '../../models/Customer.js';
+import { prisma } from '../../config/prisma.js';
 
 export async function getVehicles(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const customerId = req.query.customerId as string;
     const search = (req.query.search as string)?.trim() || '';
 
-    const filter: any = {};
-    if (customerId) filter.customerId = customerId;
-    if (search) filter.vehicleNo = { $regex: search, $options: 'i' };
+    const vehicles = await prisma.vehicle.findMany({
+      where: {
+        ...(customerId && { customerId }),
+        ...(search && { vehicleNo: { contains: search, mode: 'insensitive' } }),
+      },
+      include: {
+        customer: {
+          select: { id: true, name: true, phone: true },
+        },
+      },
+      orderBy: { vehicleNo: 'asc' },
+    });
 
-    const vehicles = await Vehicle.find(filter)
-      .populate('customerId', 'name phone')
-      .sort({ vehicleNo: 1 });
+    const formatted = vehicles.map((v) => ({
+      id: v.id,
+      _id: v.id,
+      customerId: v.customer ? { _id: v.customer.id, id: v.customer.id, name: v.customer.name, phone: v.customer.phone } : v.customerId,
+      vehicleNo: v.vehicleNo,
+      vehicleType: v.vehicleType,
+      createdAt: v.createdAt,
+      customer: v.customer,
+    }));
 
-    res.json({ success: true, vehicles });
+    res.json({ success: true, vehicles: formatted });
   } catch (error) {
     next(error);
   }
@@ -30,22 +44,33 @@ export async function createVehicle(req: Request, res: Response, next: NextFunct
       return;
     }
 
-    const customer = await Customer.findById(customerId);
+    const customer = await prisma.customer.findUnique({
+      where: { id: customerId },
+    });
     if (!customer) {
       res.status(404).json({ success: false, error: 'Customer not found.' });
       return;
     }
 
-    const vehicle = await Vehicle.create({
-      customerId,
-      vehicleNo: vehicleNo.trim().toUpperCase(),
-      vehicleType: vehicleType || 'Others',
+    const vehicle = await prisma.vehicle.create({
+      data: {
+        customerId,
+        vehicleNo: vehicleNo.trim().toUpperCase(),
+        vehicleType: vehicleType || 'Others',
+      },
     });
 
     res.status(201).json({
       success: true,
       message: 'Vehicle registered successfully.',
-      vehicle,
+      vehicle: {
+        id: vehicle.id,
+        _id: vehicle.id,
+        customerId: vehicle.customerId,
+        vehicleNo: vehicle.vehicleNo,
+        vehicleType: vehicle.vehicleType,
+        createdAt: vehicle.createdAt,
+      },
     });
   } catch (error) {
     next(error);

@@ -1,10 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import mongoose from 'mongoose';
-import { Invoice } from '../../models/Invoice.js';
-import { Customer } from '../../models/Customer.js';
-import { Vehicle } from '../../models/Vehicle.js';
-import { Product } from '../../models/Product.js';
-import { StockMovement } from '../../models/StockMovement.js';
+import { prisma } from '../../config/prisma.js';
 
 export async function createInvoice(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -34,161 +29,225 @@ export async function createInvoice(req: Request, res: Response, next: NextFunct
       return;
     }
 
-    // 1. Resolve or Create Customer
-    let customer = null;
-    if (inputCustomerId && mongoose.Types.ObjectId.isValid(inputCustomerId)) {
-      customer = await Customer.findById(inputCustomerId);
-    }
-    if (!customer) {
-      const cleanPhone = (customerPhone || '').replace(/\D/g, '');
-      customer = await Customer.findOne({
-        name: customerName.trim(),
-        ...(cleanPhone && { phone: cleanPhone }),
-      });
-      if (!customer) {
-        customer = await Customer.create({
-          name: customerName.trim(),
-          phone: cleanPhone,
-        });
-      }
-    }
-
-    // 2. Resolve or Create Vehicle
+    const cleanCustName = customerName.trim();
+    const cleanPhone = (customerPhone || '').replace(/\D/g, '');
     const cleanVehNo = vehicleNo.trim().toUpperCase();
-    let vehicle = null;
-    if (inputVehicleId && mongoose.Types.ObjectId.isValid(inputVehicleId)) {
-      vehicle = await Vehicle.findById(inputVehicleId);
-    }
-    if (!vehicle) {
-      vehicle = await Vehicle.findOne({
-        customerId: customer._id,
-        vehicleNo: cleanVehNo,
-      });
-      if (!vehicle) {
-        vehicle = await Vehicle.create({
-          customerId: customer._id,
-          vehicleNo: cleanVehNo,
-          vehicleType: vehicleType || 'Others',
-        });
-      }
-    }
-
-    // 3. Process Line Items and Real-time Stock Deduction
-    const processedItems: any[] = [];
-    let subtotal = 0;
     const now = new Date();
 
-    for (const rawItem of items) {
-      const service = (rawItem.service || '').trim();
-      if (!service) continue;
-
-      const qty = Math.max(0, Number(rawItem.qty) || 1);
-      const rate = Math.max(0, Number(rawItem.rate) || 0);
-      const amount = Math.round(qty * rate * 100) / 100;
-      const itemId = (rawItem.itemId || '').trim().toUpperCase();
-      const description = (rawItem.description || '').trim();
-
-      let buyingPrice = 0;
-
-      // If item has inventory item ID, deduct stock and snapshot buying price
-      if (itemId) {
-        const product = await Product.findOne({ itemId });
-        if (product) {
-          buyingPrice = product.buyingPrice || 0;
-          // Deduct quantity without going below zero
-          product.quantity = Math.max(0, product.quantity - qty);
-          product.updatedAt = now;
-          await product.save();
-
-          // Record stock movement (negative quantity for sale deduction)
-          await StockMovement.create({
-            itemId,
-            supplierCode: product.supplierCode || '',
-            quantity: -qty,
-            unitPrice: rate,
-            buyingPrice,
-            paymentMethod,
-            movedAt: now,
+    const createdInvoice = await prisma.$transaction(async (tx) => {
+      // 1. Resolve or Create Customer
+      let customer = null;
+      if (inputCustomerId) {
+        customer = await tx.customer.findUnique({ where: { id: inputCustomerId } });
+      }
+      if (!customer) {
+        customer = await tx.customer.findFirst({
+          where: {
+            name: cleanCustName,
+            ...(cleanPhone && { phone: cleanPhone }),
+          },
+        });
+        if (!customer) {
+          customer = await tx.customer.create({
+            data: {
+              name: cleanCustName,
+              phone: cleanPhone,
+            },
           });
         }
       }
 
-      subtotal += amount;
-      processedItems.push({
-        service,
-        itemId,
-        description,
-        qty,
-        rate,
-        amount,
-        buyingPrice,
+      // 2. Resolve or Create Vehicle
+      let vehicle = null;
+      if (inputVehicleId) {
+        vehicle = await tx.vehicle.findUnique({ where: { id: inputVehicleId } });
+      }
+      if (!vehicle) {
+        vehicle = await tx.vehicle.findFirst({
+          where: {
+            customerId: customer.id,
+            vehicleNo: cleanVehNo,
+          },
+        });
+        if (!vehicle) {
+          vehicle = await tx.vehicle.create({
+            data: {
+              customerId: customer.id,
+              vehicleNo: cleanVehNo,
+              vehicleType: vehicleType || 'Others',
+            },
+          });
+        }
+      }
+
+      // 3. Process Line Items and Real-time Stock Deduction
+      const processedItems: Array<{
+        service: string;
+        itemId: string;
+        description: string;
+        qty: number;
+        rate: number;
+        amount: number;
+        buyingPrice: number;
+      }> = [];
+
+      let subtotal = 0;
+
+      for (const rawItem of items) {
+        const service = (rawItem.service || '').trim();
+        if (!service) continue;
+
+        const qty = Math.max(0, Number(rawItem.qty) || 1);
+        const rate = Math.max(0, Number(rawItem.rate) || 0);
+        const amount = Math.round(qty * rate * 100) / 100;
+        const itemId = (rawItem.itemId || '').trim().toUpperCase();
+        const description = (rawItem.description || '').trim();
+
+        let buyingPrice = 0;
+
+        if (itemId) {
+          const product = await tx.product.findUnique({ where: { itemId } });
+          if (product) {
+            buyingPrice = Number(product.buyingPrice) || 0;
+
+            // Concurrency-safe atomic deduction
+            const newQty = Math.max(0, product.quantity - qty);
+            await tx.product.update({
+              where: { id: product.id },
+              data: {
+                quantity: newQty,
+              },
+            });
+
+            // Record stock movement (negative for sale)
+            await tx.stockMovement.create({
+              data: {
+                itemId,
+                supplierCode: product.supplierCode || '',
+                quantity: -qty,
+                unitPrice: rate,
+                buyingPrice,
+                paymentMethod,
+                movedAt: now,
+              },
+            });
+          }
+        }
+
+        subtotal += amount;
+        processedItems.push({
+          service,
+          itemId,
+          description,
+          qty,
+          rate,
+          amount,
+          buyingPrice,
+        });
+      }
+
+      if (processedItems.length === 0) {
+        throw new Error('Please add at least one valid invoice row with an amount.');
+      }
+
+      subtotal = Math.round(subtotal * 100) / 100;
+      const discountNum = Math.min(subtotal, Math.max(0, Number(discount) || 0));
+      const totalAmount = Math.max(0, Math.round((subtotal - discountNum) * 100) / 100);
+
+      // 4. Generate unique bill number
+      let billNo = customBillNo?.trim();
+      if (!billNo) {
+        const d = new Date();
+        const pad = (n: number) => String(n).padStart(2, '0');
+        const timestamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+        billNo = `INV-${timestamp}`;
+      }
+
+      // Check for billNo collision and make unique if needed
+      let uniqueBillNo = billNo;
+      let counter = 1;
+      while (await tx.invoice.findUnique({ where: { billNo: uniqueBillNo } })) {
+        uniqueBillNo = `${billNo}-${counter}`;
+        counter++;
+      }
+
+      // 5. Payment Status
+      let paymentStatus: string = 'Paid';
+      if (paymentMethod.toLowerCase() === 'credit') {
+        paymentStatus = 'unpaid';
+      } else if (paymentMethod.toLowerCase() === 'cheque') {
+        paymentStatus = 'Pending';
+      }
+
+      // 6. Create Invoice with Items
+      const invoice = await tx.invoice.create({
+        data: {
+          billNo: uniqueBillNo,
+          customerId: customer.id,
+          customerName: customer.name,
+          customerPhone: customer.phone,
+          vehicleId: vehicle.id,
+          vehicleNo: vehicle.vehicleNo,
+          vehicleType: vehicle.vehicleType,
+          dateTime: now,
+          subtotalAmount: subtotal,
+          discountAmount: discountNum,
+          totalAmount,
+          paymentMethod,
+          paymentStatus,
+          items: {
+            create: processedItems.map((item) => ({
+              service: item.service,
+              itemId: item.itemId,
+              description: item.description,
+              qty: item.qty,
+              rate: item.rate,
+              amount: item.amount,
+              buyingPrice: item.buyingPrice,
+            })),
+          },
+        },
+        include: {
+          items: true,
+        },
       });
-    }
 
-    if (processedItems.length === 0) {
-      res.status(400).json({ success: false, error: 'Please add at least one valid invoice row with an amount.' });
-      return;
-    }
-
-    subtotal = Math.round(subtotal * 100) / 100;
-    const discountNum = Math.min(subtotal, Math.max(0, Number(discount) || 0));
-    const totalAmount = Math.max(0, Math.round((subtotal - discountNum) * 100) / 100);
-
-    // 4. Generate unique bill number
-    let billNo = customBillNo?.trim();
-    if (!billNo) {
-      const d = new Date();
-      const pad = (n: number) => String(n).padStart(2, '0');
-      const timestamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-      billNo = `INV-${timestamp}`;
-    }
-
-    // 5. Payment Status
-    let paymentStatus: 'Paid' | 'Pending' | 'unpaid' = 'Paid';
-    if (paymentMethod.toLowerCase() === 'credit') {
-      paymentStatus = 'unpaid';
-    } else if (paymentMethod.toLowerCase() === 'cheque') {
-      paymentStatus = 'Pending';
-    }
-
-    // 6. Create Invoice
-    const invoice = await Invoice.create({
-      billNo,
-      customerId: customer._id,
-      customerName: customer.name,
-      customerPhone: customer.phone,
-      vehicleId: vehicle._id,
-      vehicleNo: vehicle.vehicleNo,
-      vehicleType: vehicle.vehicleType,
-      dateTime: now,
-      subtotalAmount: subtotal,
-      discountAmount: discountNum,
-      totalAmount,
-      paymentMethod,
-      paymentStatus,
-      items: processedItems,
+      return invoice;
     });
 
     res.status(201).json({
       success: true,
       message: 'Invoice created successfully.',
       invoice: {
-        id: invoice._id,
-        billNo: invoice.billNo,
-        dateTime: invoice.dateTime,
-        customerName: invoice.customerName,
-        customerPhone: invoice.customerPhone,
-        vehicleNo: invoice.vehicleNo,
-        vehicleType: invoice.vehicleType,
-        subtotalAmount: invoice.subtotalAmount,
-        discountAmount: invoice.discountAmount,
-        totalAmount: invoice.totalAmount,
-        paymentMethod: invoice.paymentMethod,
-        paymentStatus: invoice.paymentStatus,
-        items: invoice.items,
+        id: createdInvoice.id,
+        _id: createdInvoice.id,
+        billNo: createdInvoice.billNo,
+        dateTime: createdInvoice.dateTime,
+        customerName: createdInvoice.customerName,
+        customerPhone: createdInvoice.customerPhone,
+        vehicleNo: createdInvoice.vehicleNo,
+        vehicleType: createdInvoice.vehicleType,
+        subtotalAmount: Number(createdInvoice.subtotalAmount),
+        discountAmount: Number(createdInvoice.discountAmount),
+        totalAmount: Number(createdInvoice.totalAmount),
+        paymentMethod: createdInvoice.paymentMethod,
+        paymentStatus: createdInvoice.paymentStatus,
+        items: createdInvoice.items.map((it) => ({
+          service: it.service,
+          itemId: it.itemId,
+          description: it.description,
+          qty: it.qty,
+          rate: Number(it.rate),
+          amount: Number(it.amount),
+          buyingPrice: Number(it.buyingPrice),
+        })),
       },
     });
-  } catch (error) {
+  } catch (error: any) {
+    if (error.message?.includes('Please add at least one valid invoice row')) {
+      res.status(400).json({ success: false, error: error.message });
+      return;
+    }
     next(error);
   }
 }
@@ -201,41 +260,49 @@ export async function getInvoices(req: Request, res: Response, next: NextFunctio
     const fromStr = req.query.from as string;
     const toStr = req.query.to as string;
 
-    const filter: any = {};
+    const where: any = {};
 
     // Date range
     if (fromStr || toStr) {
-      filter.dateTime = {};
+      where.dateTime = {};
       if (fromStr) {
         const fromDate = new Date(fromStr);
         fromDate.setHours(0, 0, 0, 0);
-        filter.dateTime.$gte = fromDate;
+        where.dateTime.gte = fromDate;
       }
       if (toStr) {
         const toDate = new Date(toStr);
         toDate.setHours(23, 59, 59, 999);
-        filter.dateTime.$lte = toDate;
+        where.dateTime.lte = toDate;
       }
     }
 
     if (search) {
-      filter.$or = [
-        { billNo: { $regex: search, $options: 'i' } },
-        { customerName: { $regex: search, $options: 'i' } },
-        { vehicleNo: { $regex: search, $options: 'i' } },
+      where.OR = [
+        { billNo: { contains: search, mode: 'insensitive' } },
+        { customerName: { contains: search, mode: 'insensitive' } },
+        { vehicleNo: { contains: search, mode: 'insensitive' } },
       ];
     }
 
     if (paymentMethod && paymentMethod !== 'All') {
-      filter.paymentMethod = new RegExp(`^${paymentMethod}$`, 'i');
+      where.paymentMethod = { equals: paymentMethod, mode: 'insensitive' };
     }
 
     if (creditorsOnly) {
-      filter.paymentMethod = { $regex: /^credit$/i };
-      filter.paymentStatus = { $ne: 'Paid' };
+      where.paymentMethod = { equals: 'Credit', mode: 'insensitive' };
+      where.paymentStatus = { not: 'Paid' };
     }
 
-    const invoices = await Invoice.find(filter).sort({ dateTime: -1, _id: -1 });
+    const invoices = await prisma.invoice.findMany({
+      where,
+      include: {
+        _count: {
+          select: { items: true },
+        },
+      },
+      orderBy: [{ dateTime: 'desc' }, { id: 'desc' }],
+    });
 
     let cashTotal = 0;
     let chequeTotal = 0;
@@ -243,30 +310,33 @@ export async function getInvoices(req: Request, res: Response, next: NextFunctio
     let grandTotal = 0;
 
     const formatted = invoices.map((inv) => {
-      grandTotal += inv.totalAmount;
-      if (inv.paymentMethod.toLowerCase() === 'cash' || inv.paymentMethod.toLowerCase() === 'card') {
-        cashTotal += inv.totalAmount;
-      } else if (inv.paymentMethod.toLowerCase() === 'cheque') {
-        chequeTotal += inv.totalAmount;
-      } else if (inv.paymentMethod.toLowerCase() === 'credit') {
-        creditTotal += inv.totalAmount;
+      const totalAmount = Number(inv.totalAmount);
+      grandTotal += totalAmount;
+      const pm = inv.paymentMethod.toLowerCase();
+      if (pm === 'cash' || pm === 'card') {
+        cashTotal += totalAmount;
+      } else if (pm === 'cheque') {
+        chequeTotal += totalAmount;
+      } else if (pm === 'credit') {
+        creditTotal += totalAmount;
       }
 
       return {
-        id: inv._id,
+        id: inv.id,
+        _id: inv.id,
         billNo: inv.billNo,
         customerName: inv.customerName,
         customerPhone: inv.customerPhone,
         vehicleNo: inv.vehicleNo,
         vehicleType: inv.vehicleType,
         dateTime: inv.dateTime,
-        subtotalAmount: inv.subtotalAmount,
-        discountAmount: inv.discountAmount,
-        totalAmount: inv.totalAmount,
+        subtotalAmount: Number(inv.subtotalAmount),
+        discountAmount: Number(inv.discountAmount),
+        totalAmount,
         paymentMethod: inv.paymentMethod,
         paymentStatus: inv.paymentStatus,
         paymentSettledAt: inv.paymentSettledAt,
-        itemsCount: inv.items.length,
+        itemsCount: inv._count.items,
       };
     });
 
@@ -275,10 +345,10 @@ export async function getInvoices(req: Request, res: Response, next: NextFunctio
       invoices: formatted,
       summary: {
         totalInvoices: invoices.length,
-        grandTotal,
-        cashTotal,
-        chequeTotal,
-        creditTotal,
+        grandTotal: Math.round(grandTotal * 100) / 100,
+        cashTotal: Math.round(cashTotal * 100) / 100,
+        chequeTotal: Math.round(chequeTotal * 100) / 100,
+        creditTotal: Math.round(creditTotal * 100) / 100,
       },
     });
   } catch (error) {
@@ -289,14 +359,21 @@ export async function getInvoices(req: Request, res: Response, next: NextFunctio
 export async function getInvoiceById(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const { id } = req.params;
-    let invoice = null;
-
     const paramId = Array.isArray(id) ? id[0] : id;
-    if (paramId && mongoose.Types.ObjectId.isValid(paramId)) {
-      invoice = await Invoice.findById(paramId);
-    } else if (paramId) {
-      invoice = await Invoice.findOne({ billNo: paramId });
+
+    if (!paramId) {
+      res.status(404).json({ success: false, error: 'Invoice not found.' });
+      return;
     }
+
+    const invoice = await prisma.invoice.findFirst({
+      where: {
+        OR: [{ id: paramId }, { billNo: paramId }],
+      },
+      include: {
+        items: true,
+      },
+    });
 
     if (!invoice) {
       res.status(404).json({ success: false, error: 'Invoice not found.' });
@@ -306,20 +383,29 @@ export async function getInvoiceById(req: Request, res: Response, next: NextFunc
     res.json({
       success: true,
       invoice: {
-        id: invoice._id,
+        id: invoice.id,
+        _id: invoice.id,
         billNo: invoice.billNo,
         dateTime: invoice.dateTime,
         customerName: invoice.customerName,
         customerPhone: invoice.customerPhone,
         vehicleNo: invoice.vehicleNo,
         vehicleType: invoice.vehicleType,
-        subtotalAmount: invoice.subtotalAmount,
-        discountAmount: invoice.discountAmount,
-        totalAmount: invoice.totalAmount,
+        subtotalAmount: Number(invoice.subtotalAmount),
+        discountAmount: Number(invoice.discountAmount),
+        totalAmount: Number(invoice.totalAmount),
         paymentMethod: invoice.paymentMethod,
         paymentStatus: invoice.paymentStatus,
         paymentSettledAt: invoice.paymentSettledAt,
-        items: invoice.items,
+        items: invoice.items.map((it) => ({
+          service: it.service,
+          itemId: it.itemId,
+          description: it.description,
+          qty: it.qty,
+          rate: Number(it.rate),
+          amount: Number(it.amount),
+          buyingPrice: Number(it.buyingPrice),
+        })),
       },
     });
   } catch (error) {
@@ -336,19 +422,17 @@ export async function settleInvoices(req: Request, res: Response, next: NextFunc
     }
 
     const now = new Date();
-    await Invoice.updateMany(
-      {
-        _id: { $in: invoiceIds },
-        paymentMethod: { $regex: /^credit$/i },
-        paymentStatus: { $ne: 'Paid' },
+    await prisma.invoice.updateMany({
+      where: {
+        id: { in: invoiceIds },
+        paymentMethod: { equals: 'Credit', mode: 'insensitive' },
+        paymentStatus: { not: 'Paid' },
       },
-      {
-        $set: {
-          paymentStatus: 'Paid',
-          paymentSettledAt: now,
-        },
-      }
-    );
+      data: {
+        paymentStatus: 'Paid',
+        paymentSettledAt: now,
+      },
+    });
 
     res.json({
       success: true,
@@ -361,59 +445,82 @@ export async function settleInvoices(req: Request, res: Response, next: NextFunc
 
 export async function settleInvoiceById(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const now = new Date();
-    const invoice = await Invoice.findByIdAndUpdate(
-      id,
-      {
-        $set: {
-          paymentStatus: 'Paid',
-          paymentSettledAt: now,
-        },
-      },
-      { new: true }
-    );
 
-    if (!invoice) {
-      res.status(404).json({ success: false, error: 'Invoice not found.' });
-      return;
-    }
+    const invoice = await prisma.invoice.update({
+      where: { id },
+      data: {
+        paymentStatus: 'Paid',
+        paymentSettledAt: now,
+      },
+    });
 
     res.json({
       success: true,
       message: `Invoice ${invoice.billNo} marked as settled.`,
-      invoice,
+      invoice: {
+        ...invoice,
+        subtotalAmount: Number(invoice.subtotalAmount),
+        discountAmount: Number(invoice.discountAmount),
+        totalAmount: Number(invoice.totalAmount),
+      },
     });
-  } catch (error) {
+  } catch (error: any) {
+    if (error.code === 'P2025') {
+      res.status(404).json({ success: false, error: 'Invoice not found.' });
+      return;
+    }
     next(error);
   }
 }
 
 export async function deleteInvoice(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { id } = req.params;
-    const invoice = await Invoice.findById(id);
+    const id = req.params.id as string;
 
-    if (!invoice) {
+    const deleted = await prisma.$transaction(async (tx) => {
+      const invoice = await tx.invoice.findUnique({
+        where: { id },
+        include: { items: true },
+      });
+
+      if (!invoice) {
+        return null;
+      }
+
+      // Restore stock for inventory items sold on this invoice
+      for (const item of invoice.items) {
+        if (item.itemId) {
+          const product = await tx.product.findUnique({
+            where: { itemId: item.itemId.trim().toUpperCase() },
+          });
+          if (product) {
+            await tx.product.update({
+              where: { id: product.id },
+              data: {
+                quantity: product.quantity + item.qty,
+              },
+            });
+          }
+        }
+      }
+
+      await tx.invoice.delete({
+        where: { id },
+      });
+
+      return invoice;
+    });
+
+    if (!deleted) {
       res.status(404).json({ success: false, error: 'Invoice not found.' });
       return;
     }
 
-    // Restore stock for inventory items sold on this invoice
-    for (const item of invoice.items) {
-      if (item.itemId) {
-        await Product.findOneAndUpdate(
-          { itemId: item.itemId.trim().toUpperCase() },
-          { $inc: { quantity: item.qty }, $set: { updatedAt: new Date() } }
-        );
-      }
-    }
-
-    await Invoice.findByIdAndDelete(id);
-
     res.json({
       success: true,
-      message: `Invoice ${invoice.billNo} deleted and inventory quantities restored.`,
+      message: `Invoice ${deleted.billNo} deleted and inventory quantities restored.`,
     });
   } catch (error) {
     next(error);

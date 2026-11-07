@@ -1,9 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { Customer } from '../../models/Customer.js';
-import { Vehicle } from '../../models/Vehicle.js';
-import { Invoice } from '../../models/Invoice.js';
-import { Product } from '../../models/Product.js';
-import { Supplier } from '../../models/Supplier.js';
+import { prisma } from '../../config/prisma.js';
 
 export async function getDashboardMetrics(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -17,27 +13,30 @@ export async function getDashboardMetrics(req: Request, res: Response, next: Nex
       creditorsResult,
       lowStockCount,
     ] = await Promise.all([
-      Customer.countDocuments(),
-      Vehicle.countDocuments(),
-      Invoice.countDocuments(),
-      Product.countDocuments(),
-      Invoice.aggregate([{ $group: { _id: null, total: { $sum: '$totalAmount' } } }]),
-      Supplier.countDocuments(),
-      Invoice.aggregate([
-        {
-          $match: {
-            paymentMethod: { $regex: /^credit$/i },
-            paymentStatus: { $ne: 'Paid' },
-          },
+      prisma.customer.count(),
+      prisma.vehicle.count(),
+      prisma.invoice.count(),
+      prisma.product.count(),
+      prisma.invoice.aggregate({
+        _sum: { totalAmount: true },
+      }),
+      prisma.supplier.count(),
+      prisma.invoice.aggregate({
+        where: {
+          paymentMethod: { equals: 'Credit', mode: 'insensitive' },
+          paymentStatus: { not: 'Paid' },
         },
-        { $group: { _id: null, total: { $sum: '$totalAmount' }, count: { $sum: 1 } } },
-      ]),
-      Product.countDocuments({ quantity: { $lte: 5 } }),
+        _sum: { totalAmount: true },
+        _count: true,
+      }),
+      prisma.product.count({
+        where: { quantity: { lte: 5 } },
+      }),
     ]);
 
-    const totalRevenue = revenueResult[0]?.total || 0;
-    const pendingCreditAmount = creditorsResult[0]?.total || 0;
-    const pendingCreditCount = creditorsResult[0]?.count || 0;
+    const totalRevenue = Number(revenueResult._sum.totalAmount || 0);
+    const pendingCreditAmount = Number(creditorsResult._sum.totalAmount || 0);
+    const pendingCreditCount = creditorsResult._count || 0;
 
     res.json({
       success: true,
@@ -46,9 +45,9 @@ export async function getDashboardMetrics(req: Request, res: Response, next: Nex
         vehicles: vehiclesCount,
         invoices: invoicesCount,
         inventoryItems: inventoryCount,
-        revenue: totalRevenue,
+        revenue: Math.round(totalRevenue * 100) / 100,
         suppliers: suppliersCount,
-        pendingCreditAmount,
+        pendingCreditAmount: Math.round(pendingCreditAmount * 100) / 100,
         pendingCreditCount,
         lowStockItems: lowStockCount,
       },
@@ -60,14 +59,34 @@ export async function getDashboardMetrics(req: Request, res: Response, next: Nex
 
 export async function getRecentInvoices(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const invoices = await Invoice.find()
-      .sort({ dateTime: -1, _id: -1 })
-      .limit(8)
-      .select('billNo customerName vehicleNo dateTime totalAmount paymentMethod paymentStatus');
+    const invoices = await prisma.invoice.findMany({
+      take: 8,
+      orderBy: [{ dateTime: 'desc' }, { id: 'desc' }],
+      select: {
+        id: true,
+        billNo: true,
+        customerName: true,
+        vehicleNo: true,
+        dateTime: true,
+        totalAmount: true,
+        paymentMethod: true,
+        paymentStatus: true,
+      },
+    });
 
     res.json({
       success: true,
-      invoices,
+      invoices: invoices.map((inv) => ({
+        id: inv.id,
+        _id: inv.id,
+        billNo: inv.billNo,
+        customerName: inv.customerName,
+        vehicleNo: inv.vehicleNo,
+        dateTime: inv.dateTime,
+        totalAmount: Number(inv.totalAmount),
+        paymentMethod: inv.paymentMethod,
+        paymentStatus: inv.paymentStatus,
+      })),
     });
   } catch (error) {
     next(error);
@@ -79,45 +98,56 @@ export async function getSalesCharts(req: Request, res: Response, next: NextFunc
     // 30 days daily sales trend
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    thirtyDaysAgo.setHours(0, 0, 0, 0);
 
-    const dailyTrend = await Invoice.aggregate([
-      { $match: { dateTime: { $gte: thirtyDaysAgo } } },
-      {
-        $group: {
-          _id: { $dateToString: { format: '%Y-%m-%d', date: '$dateTime' } },
-          totalSales: { $sum: '$totalAmount' },
-          invoiceCount: { $sum: 1 },
-        },
+    const invoices = await prisma.invoice.findMany({
+      where: {
+        dateTime: { gte: thirtyDaysAgo },
       },
-      { $sort: { _id: 1 } },
-      {
-        $project: {
-          date: '$_id',
-          sales: '$totalSales',
-          count: '$invoiceCount',
-          _id: 0,
-        },
+      select: {
+        dateTime: true,
+        totalAmount: true,
+        paymentMethod: true,
       },
-    ]);
+      orderBy: { dateTime: 'asc' },
+    });
 
-    // Payment method distribution
-    const paymentMethods = await Invoice.aggregate([
-      {
-        $group: {
-          _id: '$paymentMethod',
-          totalAmount: { $sum: '$totalAmount' },
-          count: { $sum: 1 },
-        },
-      },
-      {
-        $project: {
-          method: '$_id',
-          total: '$totalAmount',
-          count: '$count',
-          _id: 0,
-        },
-      },
-    ]);
+    const trendMap = new Map<string, { totalSales: number; invoiceCount: number }>();
+    const paymentMap = new Map<string, { total: number; count: number }>();
+
+    for (const inv of invoices) {
+      const dateKey = inv.dateTime.toISOString().split('T')[0];
+      const amount = Number(inv.totalAmount);
+
+      // Trend
+      if (!trendMap.has(dateKey)) {
+        trendMap.set(dateKey, { totalSales: 0, invoiceCount: 0 });
+      }
+      const t = trendMap.get(dateKey)!;
+      t.totalSales += amount;
+      t.invoiceCount += 1;
+
+      // Payment
+      const pm = inv.paymentMethod || 'Cash';
+      if (!paymentMap.has(pm)) {
+        paymentMap.set(pm, { total: 0, count: 0 });
+      }
+      const p = paymentMap.get(pm)!;
+      p.total += amount;
+      p.count += 1;
+    }
+
+    const dailyTrend = Array.from(trendMap.entries()).map(([date, data]) => ({
+      date,
+      sales: Math.round(data.totalSales * 100) / 100,
+      count: data.invoiceCount,
+    }));
+
+    const paymentMethods = Array.from(paymentMap.entries()).map(([method, data]) => ({
+      method,
+      total: Math.round(data.total * 100) / 100,
+      count: data.count,
+    }));
 
     res.json({
       success: true,

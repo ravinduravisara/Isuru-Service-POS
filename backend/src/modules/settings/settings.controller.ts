@@ -1,21 +1,11 @@
 import { Request, Response, NextFunction } from 'express';
 import bcrypt from 'bcryptjs';
-import path from 'path';
-import fs from 'fs';
-import { Setting } from '../../models/Setting.js';
-import { User } from '../../models/User.js';
-import { Customer } from '../../models/Customer.js';
-import { Vehicle } from '../../models/Vehicle.js';
-import { Invoice } from '../../models/Invoice.js';
-import { Product } from '../../models/Product.js';
-import { Supplier } from '../../models/Supplier.js';
-import { StockMovement } from '../../models/StockMovement.js';
-import { SupplyInvoice } from '../../models/SupplyInvoice.js';
+import { prisma } from '../../config/prisma.js';
 
 export async function getSettings(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const settings = await Setting.find();
-    const map = new Map<string, any>();
+    const settings = await prisma.setting.findMany();
+    const map = new Map<string, string>();
     settings.forEach((s) => map.set(s.key, s.value));
 
     const businessName = map.get('business_name') || 'Isuru Service Center';
@@ -59,7 +49,11 @@ export async function updateBusinessProfile(req: Request, res: Response, next: N
     ];
 
     for (const u of updates) {
-      await Setting.findOneAndUpdate({ key: u.key }, { value: u.value, updatedAt: new Date() }, { upsert: true });
+      await prisma.setting.upsert({
+        where: { key: u.key },
+        update: { value: u.value },
+        create: { key: u.key, value: u.value },
+      });
     }
 
     res.json({ success: true, message: 'Business profile updated successfully.' });
@@ -81,7 +75,6 @@ export async function updateCredentials(req: Request, res: Response, next: NextF
       return;
     }
 
-    // Update settings collection
     const updates = [
       { key: 'admin_username', value: adminUsername.trim() },
       { key: 'admin_password', value: adminPassword },
@@ -90,33 +83,54 @@ export async function updateCredentials(req: Request, res: Response, next: NextF
     ];
 
     for (const u of updates) {
-      await Setting.findOneAndUpdate({ key: u.key }, { value: u.value, updatedAt: new Date() }, { upsert: true });
+      await prisma.setting.upsert({
+        where: { key: u.key },
+        update: { value: u.value },
+        create: { key: u.key, value: u.value },
+      });
     }
 
-    // Update User documents
     const adminHash = await bcrypt.hash(adminPassword, 10);
-    await User.findOneAndUpdate(
-      { role: 'Admin' },
-      {
-        username: adminUsername.trim(),
-        passwordHash: adminHash,
-        role: 'Admin',
-        fullName: 'Administrator',
-      },
-      { upsert: true }
-    );
+    const existingAdmin = await prisma.user.findFirst({ where: { role: 'Admin' } });
+    if (existingAdmin) {
+      await prisma.user.update({
+        where: { id: existingAdmin.id },
+        data: {
+          username: adminUsername.trim(),
+          passwordHash: adminHash,
+        },
+      });
+    } else {
+      await prisma.user.create({
+        data: {
+          username: adminUsername.trim(),
+          passwordHash: adminHash,
+          role: 'Admin',
+          fullName: 'Administrator',
+        },
+      });
+    }
 
     const userHash = await bcrypt.hash(userPassword, 10);
-    await User.findOneAndUpdate(
-      { role: 'User' },
-      {
-        username: userUsername.trim(),
-        passwordHash: userHash,
-        role: 'User',
-        fullName: 'Service Staff',
-      },
-      { upsert: true }
-    );
+    const existingUser = await prisma.user.findFirst({ where: { role: 'User' } });
+    if (existingUser) {
+      await prisma.user.update({
+        where: { id: existingUser.id },
+        data: {
+          username: userUsername.trim(),
+          passwordHash: userHash,
+        },
+      });
+    } else {
+      await prisma.user.create({
+        data: {
+          username: userUsername.trim(),
+          passwordHash: userHash,
+          role: 'User',
+          fullName: 'Service Staff',
+        },
+      });
+    }
 
     res.json({ success: true, message: 'Login credentials updated successfully.' });
   } catch (error) {
@@ -146,23 +160,26 @@ export async function purgeData(req: Request, res: Response, next: NextFunction)
     const { type } = req.body; // 'all' | 'suppliers'
 
     if (type === 'suppliers') {
-      await StockMovement.deleteMany({ supplierCode: { $exists: true, $ne: '' } });
-      await SupplyInvoice.deleteMany({});
-      await Product.updateMany({}, { $set: { supplierCode: '' } });
-      await Supplier.deleteMany({});
+      await prisma.$transaction([
+        prisma.stockMovement.deleteMany({ where: { supplierCode: { not: '' } } }),
+        prisma.supplyInvoice.deleteMany({}),
+        prisma.product.updateMany({ data: { supplierCode: '' } }),
+        prisma.supplier.deleteMany({}),
+      ]);
       res.json({ success: true, message: 'Suppliers data purged successfully.' });
       return;
     }
 
     if (type === 'all') {
-      await Promise.all([
-        Invoice.deleteMany({}),
-        Vehicle.deleteMany({}),
-        Customer.deleteMany({}),
-        StockMovement.deleteMany({}),
-        SupplyInvoice.deleteMany({}),
-        Supplier.deleteMany({}),
-        Product.deleteMany({}),
+      await prisma.$transaction([
+        prisma.invoiceItem.deleteMany({}),
+        prisma.invoice.deleteMany({}),
+        prisma.vehicle.deleteMany({}),
+        prisma.customer.deleteMany({}),
+        prisma.stockMovement.deleteMany({}),
+        prisma.supplyInvoice.deleteMany({}),
+        prisma.supplier.deleteMany({}),
+        prisma.product.deleteMany({}),
       ]);
       res.json({ success: true, message: 'All transactional data purged successfully.' });
       return;

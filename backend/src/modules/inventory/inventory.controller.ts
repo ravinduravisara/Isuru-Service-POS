@@ -1,47 +1,51 @@
 import { Request, Response, NextFunction } from 'express';
-import { Product } from '../../models/Product.js';
-import { StockMovement } from '../../models/StockMovement.js';
+import { prisma } from '../../config/prisma.js';
 
 export async function getInventory(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const search = (req.query.search as string)?.trim() || '';
     const category = (req.query.category as string)?.trim() || '';
 
-    const filter: any = {};
+    const where: any = {};
     if (search) {
-      filter.$or = [
-        { itemId: { $regex: search, $options: 'i' } },
-        { itemName: { $regex: search, $options: 'i' } },
-        { brand: { $regex: search, $options: 'i' } },
-        { supplierCode: { $regex: search, $options: 'i' } },
+      where.OR = [
+        { itemId: { contains: search, mode: 'insensitive' } },
+        { itemName: { contains: search, mode: 'insensitive' } },
+        { brand: { contains: search, mode: 'insensitive' } },
+        { supplierCode: { contains: search, mode: 'insensitive' } },
       ];
     }
     if (category && category !== 'All') {
-      filter.itemName = category;
+      where.itemName = category;
     }
 
-    const items = await Product.find(filter).sort({ itemName: 1, brand: 1 });
+    const items = await prisma.product.findMany({
+      where,
+      orderBy: [{ itemName: 'asc' }, { brand: 'asc' }],
+    });
 
-    // Compute inventory valuation summary
     let totalSellingValue = 0;
     let totalCostValue = 0;
     let lowStockCount = 0;
 
     const formatted = items.map((p) => {
-      const sellingValue = p.quantity * p.unitPrice;
-      const costValue = p.quantity * p.buyingPrice;
+      const unitPrice = Number(p.unitPrice);
+      const buyingPrice = Number(p.buyingPrice);
+      const sellingValue = p.quantity * unitPrice;
+      const costValue = p.quantity * buyingPrice;
       totalSellingValue += sellingValue;
       totalCostValue += costValue;
       if (p.quantity <= 5) lowStockCount++;
 
       return {
-        id: p._id,
+        id: p.id,
+        _id: p.id,
         itemId: p.itemId,
         itemName: p.itemName,
         brand: p.brand || '',
         quantity: p.quantity,
-        unitPrice: p.unitPrice,
-        buyingPrice: p.buyingPrice,
+        unitPrice,
+        buyingPrice,
         sellingValue,
         costValue,
         supplierCode: p.supplierCode || '',
@@ -55,8 +59,8 @@ export async function getInventory(req: Request, res: Response, next: NextFuncti
       items: formatted,
       summary: {
         totalItems: items.length,
-        totalSellingValue,
-        totalCostValue,
+        totalSellingValue: Math.round(totalSellingValue * 100) / 100,
+        totalCostValue: Math.round(totalCostValue * 100) / 100,
         lowStockCount,
       },
     });
@@ -75,7 +79,10 @@ export async function lookupByItemId(req: Request, res: Response, next: NextFunc
       return;
     }
 
-    const product = await Product.findOne({ itemId: cleanItemId });
+    const product = await prisma.product.findUnique({
+      where: { itemId: cleanItemId },
+    });
+
     if (!product) {
       res.json({ success: false, found: false, message: 'Item not found in inventory' });
       return;
@@ -85,13 +92,14 @@ export async function lookupByItemId(req: Request, res: Response, next: NextFunc
       success: true,
       found: true,
       product: {
-        id: product._id,
+        id: product.id,
+        _id: product.id,
         itemId: product.itemId,
         itemName: product.itemName,
         brand: product.brand,
         quantity: product.quantity,
-        unitPrice: product.unitPrice,
-        buyingPrice: product.buyingPrice,
+        unitPrice: Number(product.unitPrice),
+        buyingPrice: Number(product.buyingPrice),
       },
     });
   } catch (error) {
@@ -121,44 +129,60 @@ export async function createProduct(req: Request, res: Response, next: NextFunct
     const price = Math.max(0, Number(unitPrice) || 0);
     const bPrice = Math.max(0, Number(buyingPrice) || 0);
 
+    const now = new Date();
+
     // Check if an existing product matches by customItemId or Category + Brand + UnitPrice
     let existing = null;
     if (customItemId && customItemId.trim()) {
-      existing = await Product.findOne({ itemId: customItemId.trim().toUpperCase() });
+      existing = await prisma.product.findUnique({
+        where: { itemId: customItemId.trim().toUpperCase() },
+      });
     } else {
-      existing = await Product.findOne({
-        itemName: itemName.trim(),
-        brand: brand.trim(),
-        unitPrice: price,
+      existing = await prisma.product.findFirst({
+        where: {
+          itemName: itemName.trim(),
+          brand: brand.trim(),
+          unitPrice: price,
+        },
       });
     }
 
-    const now = new Date();
-
     if (existing) {
-      existing.quantity += qty;
-      existing.unitPrice = price;
-      existing.buyingPrice = bPrice;
-      existing.supplierCode = supplierCode.trim() || existing.supplierCode;
-      existing.paymentMethod = paymentMethod;
-      existing.updatedAt = now;
-      await existing.save();
+      const result = await prisma.$transaction(async (tx) => {
+        const updated = await tx.product.update({
+          where: { id: existing.id },
+          data: {
+            quantity: existing.quantity + qty,
+            unitPrice: price,
+            buyingPrice: bPrice,
+            supplierCode: supplierCode.trim() || existing.supplierCode,
+            paymentMethod,
+          },
+        });
 
-      // Record stock movement
-      await StockMovement.create({
-        itemId: existing.itemId,
-        supplierCode: existing.supplierCode,
-        quantity: qty,
-        unitPrice: price,
-        buyingPrice: bPrice,
-        paymentMethod,
-        movedAt: now,
+        await tx.stockMovement.create({
+          data: {
+            itemId: updated.itemId,
+            supplierCode: updated.supplierCode,
+            quantity: qty,
+            unitPrice: price,
+            buyingPrice: bPrice,
+            paymentMethod,
+            movedAt: now,
+          },
+        });
+
+        return updated;
       });
 
       res.json({
         success: true,
         message: 'Existing item stock incremented successfully.',
-        product: existing,
+        product: {
+          ...result,
+          unitPrice: Number(result.unitPrice),
+          buyingPrice: Number(result.buyingPrice),
+        },
       });
       return;
     }
@@ -166,13 +190,18 @@ export async function createProduct(req: Request, res: Response, next: NextFunct
     // Auto-generate Item ID if not provided
     let finalItemId = customItemId?.trim().toUpperCase();
     if (!finalItemId) {
-      const prefix = itemName
-        .trim()
-        .toUpperCase()
-        .replace(/[^A-Z]/g, '')
-        .slice(0, 3) || 'CAT';
+      const prefix =
+        itemName
+          .trim()
+          .toUpperCase()
+          .replace(/[^A-Z]/g, '')
+          .slice(0, 3) || 'CAT';
 
-      const lastItem = await Product.findOne({ itemId: new RegExp(`^${prefix}-`) }).sort({ itemId: -1 });
+      const lastItem = await prisma.product.findFirst({
+        where: { itemId: { startsWith: `${prefix}-` } },
+        orderBy: { itemId: 'desc' },
+      });
+
       let nextNum = 1;
       if (lastItem && lastItem.itemId) {
         const parts = lastItem.itemId.split('-');
@@ -183,36 +212,46 @@ export async function createProduct(req: Request, res: Response, next: NextFunct
       finalItemId = `${prefix}-${String(nextNum).padStart(4, '0')}`;
     }
 
-    const product = await Product.create({
-      itemId: finalItemId,
-      itemName: itemName.trim(),
-      brand: brand.trim(),
-      quantity: qty,
-      unitPrice: price,
-      buyingPrice: bPrice,
-      supplierCode: supplierCode.trim(),
-      paymentMethod,
-      updatedAt: now,
-    });
+    const createdProduct = await prisma.$transaction(async (tx) => {
+      const product = await tx.product.create({
+        data: {
+          itemId: finalItemId,
+          itemName: itemName.trim(),
+          brand: brand.trim(),
+          quantity: qty,
+          unitPrice: price,
+          buyingPrice: bPrice,
+          supplierCode: supplierCode.trim(),
+          paymentMethod,
+        },
+      });
 
-    // Record initial stock movement
-    await StockMovement.create({
-      itemId: finalItemId,
-      supplierCode: supplierCode.trim(),
-      quantity: qty,
-      unitPrice: price,
-      buyingPrice: bPrice,
-      paymentMethod,
-      movedAt: now,
+      await tx.stockMovement.create({
+        data: {
+          itemId: finalItemId,
+          supplierCode: supplierCode.trim(),
+          quantity: qty,
+          unitPrice: price,
+          buyingPrice: bPrice,
+          paymentMethod,
+          movedAt: now,
+        },
+      });
+
+      return product;
     });
 
     res.status(201).json({
       success: true,
       message: 'Product added to inventory successfully.',
-      product,
+      product: {
+        ...createdProduct,
+        unitPrice: Number(createdProduct.unitPrice),
+        buyingPrice: Number(createdProduct.buyingPrice),
+      },
     });
   } catch (error: any) {
-    if (error.code === 11000) {
+    if (error.code === 'P2002') {
       res.status(409).json({ success: false, error: 'Product with this Item ID already exists.' });
       return;
     }
@@ -222,7 +261,7 @@ export async function createProduct(req: Request, res: Response, next: NextFunct
 
 export async function updateProduct(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const {
       itemName,
       brand,
@@ -233,7 +272,9 @@ export async function updateProduct(req: Request, res: Response, next: NextFunct
       paymentMethod,
     } = req.body;
 
-    const product = await Product.findById(id);
+    const product = await prisma.product.findUnique({
+      where: { id },
+    });
     if (!product) {
       res.status(404).json({ success: false, error: 'Product not found.' });
       return;
@@ -243,50 +284,72 @@ export async function updateProduct(req: Request, res: Response, next: NextFunct
     const newQty = quantity !== undefined ? Math.max(0, Number(quantity)) : product.quantity;
     const diff = newQty - oldQty;
 
-    product.itemName = itemName !== undefined ? itemName.trim() : product.itemName;
-    product.brand = brand !== undefined ? brand.trim() : product.brand;
-    product.quantity = newQty;
-    product.unitPrice = unitPrice !== undefined ? Math.max(0, Number(unitPrice)) : product.unitPrice;
-    product.buyingPrice = buyingPrice !== undefined ? Math.max(0, Number(buyingPrice)) : product.buyingPrice;
-    product.supplierCode = supplierCode !== undefined ? supplierCode.trim() : product.supplierCode;
-    product.paymentMethod = paymentMethod || product.paymentMethod;
-    product.updatedAt = new Date();
-    await product.save();
+    const priceNum = unitPrice !== undefined ? Math.max(0, Number(unitPrice)) : Number(product.unitPrice);
+    const bPriceNum = buyingPrice !== undefined ? Math.max(0, Number(buyingPrice)) : Number(product.buyingPrice);
+    const now = new Date();
 
-    // If quantity changed, record a movement
-    if (diff !== 0) {
-      await StockMovement.create({
-        itemId: product.itemId,
-        supplierCode: product.supplierCode,
-        quantity: diff,
-        unitPrice: product.unitPrice,
-        buyingPrice: product.buyingPrice,
-        paymentMethod: product.paymentMethod,
-        movedAt: new Date(),
+    const updated = await prisma.$transaction(async (tx) => {
+      const prod = await tx.product.update({
+        where: { id },
+        data: {
+          itemName: itemName !== undefined ? itemName.trim() : product.itemName,
+          brand: brand !== undefined ? brand.trim() : product.brand,
+          quantity: newQty,
+          unitPrice: priceNum,
+          buyingPrice: bPriceNum,
+          supplierCode: supplierCode !== undefined ? supplierCode.trim() : product.supplierCode,
+          paymentMethod: paymentMethod || product.paymentMethod,
+        },
       });
-    }
+
+      if (diff !== 0) {
+        await tx.stockMovement.create({
+          data: {
+            itemId: prod.itemId,
+            supplierCode: prod.supplierCode,
+            quantity: diff,
+            unitPrice: priceNum,
+            buyingPrice: bPriceNum,
+            paymentMethod: prod.paymentMethod,
+            movedAt: now,
+          },
+        });
+      }
+
+      return prod;
+    });
 
     res.json({
       success: true,
       message: 'Product updated successfully.',
-      product,
+      product: {
+        ...updated,
+        unitPrice: Number(updated.unitPrice),
+        buyingPrice: Number(updated.buyingPrice),
+      },
     });
-  } catch (error) {
+  } catch (error: any) {
+    if (error.code === 'P2025') {
+      res.status(404).json({ success: false, error: 'Product not found.' });
+      return;
+    }
     next(error);
   }
 }
 
 export async function deleteProduct(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { id } = req.params;
-    const product = await Product.findByIdAndDelete(id);
-    if (!product) {
+    const id = req.params.id as string;
+    await prisma.product.delete({
+      where: { id },
+    });
+
+    res.json({ success: true, message: 'Product deleted successfully.' });
+  } catch (error: any) {
+    if (error.code === 'P2025') {
       res.status(404).json({ success: false, error: 'Product not found.' });
       return;
     }
-
-    res.json({ success: true, message: 'Product deleted successfully.' });
-  } catch (error) {
     next(error);
   }
 }
@@ -304,20 +367,25 @@ export async function importCsv(req: Request, res: Response, next: NextFunction)
       return;
     }
 
-    const lines = csvContent.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+    const lines = csvContent
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
     if (lines.length === 0) {
       res.status(400).json({ success: false, error: 'CSV content is empty.' });
       return;
     }
 
     let startIdx = 0;
-    // Check if header row exists
-    if (lines[0].toLowerCase().includes('part') || lines[0].toLowerCase().includes('item') || lines[0].toLowerCase().includes('oe')) {
+    if (
+      lines[0].toLowerCase().includes('part') ||
+      lines[0].toLowerCase().includes('item') ||
+      lines[0].toLowerCase().includes('oe')
+    ) {
       startIdx = 1;
     }
 
     let importedCount = 0;
-    const now = new Date();
 
     for (let i = startIdx; i < lines.length; i++) {
       const parts = lines[i].split(',').map((p) => p.trim().replace(/^["']|["']$/g, ''));
@@ -329,22 +397,18 @@ export async function importCsv(req: Request, res: Response, next: NextFunction)
 
       if (!itemId) continue;
 
-      // Upsert item
-      await Product.findOneAndUpdate(
-        { itemId },
-        {
-          $setOnInsert: {
-            itemId,
-            itemName: category.trim(),
-            brand: brand.trim(),
-            quantity: 0,
-            unitPrice: price,
-            buyingPrice: 0,
-            updatedAt: now,
-          },
+      await prisma.product.upsert({
+        where: { itemId },
+        update: {},
+        create: {
+          itemId,
+          itemName: category.trim(),
+          brand: brand.trim(),
+          quantity: 0,
+          unitPrice: price,
+          buyingPrice: 0,
         },
-        { upsert: true, new: true }
-      );
+      });
       importedCount++;
     }
 
@@ -360,8 +424,14 @@ export async function importCsv(req: Request, res: Response, next: NextFunction)
 
 export async function getDistinctCategories(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const categories = await Product.distinct('itemName');
-    res.json({ success: true, categories: categories.filter(Boolean).sort() });
+    const products = await prisma.product.findMany({
+      select: { itemName: true },
+      distinct: ['itemName'],
+      orderBy: { itemName: 'asc' },
+    });
+
+    const categories = products.map((p) => p.itemName).filter(Boolean);
+    res.json({ success: true, categories });
   } catch (error) {
     next(error);
   }

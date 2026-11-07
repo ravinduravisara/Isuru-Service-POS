@@ -38,3 +38,13 @@ Thumbs.db
 # Uploads and temporary assets
 backend/uploads/*
 !backend/uploads/.gitkeep
+
+# Backups and TLS secrets
+backups/
+*.sql.gz
+*.sha256
+docker/ssl/
+*.key
+*.pem
+*.crt
+

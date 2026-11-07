@@ -8,6 +8,7 @@ import { errorHandler } from './middleware/errorHandler.js';
 
 // Route imports
 import { authRouter } from './modules/auth/auth.routes.js';
+import { authRateLimiter } from './middleware/rateLimiter.js';
 import { dashboardRouter } from './modules/dashboard/dashboard.routes.js';
 import { customersRouter } from './modules/customers/customers.routes.js';
 import { vehiclesRouter } from './modules/vehicles/vehicles.routes.js';
@@ -20,6 +21,15 @@ import { profitRouter } from './modules/profit/profit.routes.js';
 import { settingsRouter } from './modules/settings/settings.routes.js';
 
 export const app = express();
+
+// HTTP Security Headers
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
 
 // Middlewares
 app.use(
@@ -57,6 +67,7 @@ app.get('/api/v1/health', (req, res) => {
 });
 
 // Mount API modules
+app.use('/api/v1/auth/login', authRateLimiter);
 app.use('/api/v1/auth', authRouter);
 app.use('/api/v1/dashboard', dashboardRouter);
 app.use('/api/v1/customers', customersRouter);

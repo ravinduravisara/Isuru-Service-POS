@@ -1,73 +1,62 @@
 import { Request, Response, NextFunction } from 'express';
-import { Supplier } from '../../models/Supplier.js';
-import { Product } from '../../models/Product.js';
-import { StockMovement } from '../../models/StockMovement.js';
+import { prisma } from '../../config/prisma.js';
 
 export async function getSuppliers(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const search = (req.query.search as string)?.trim() || '';
 
     // Synchronize totals from current Product inventory state
-    const inventoryAgg = await Product.aggregate([
-      { $match: { supplierCode: { $exists: true, $ne: '' } } },
-      {
-        $group: {
-          _id: {
-            supplierCode: '$supplierCode',
-            method: {
-              $cond: [
-                { $regexMatch: { input: '$paymentMethod', regex: /credit/i } },
-                'Credit',
-                {
-                  $cond: [
-                    { $regexMatch: { input: '$paymentMethod', regex: /cheque/i } },
-                    'Cheque',
-                    'Cash',
-                  ],
-                },
-              ],
-            },
-          },
-          total: { $sum: { $multiply: ['$quantity', '$buyingPrice'] } },
-        },
+    const products = await prisma.product.findMany({
+      where: {
+        supplierCode: { not: '' },
       },
-    ]);
+      select: {
+        supplierCode: true,
+        paymentMethod: true,
+        quantity: true,
+        buyingPrice: true,
+      },
+    });
 
-    // Build map of totals per supplier code
     const supplierTotals = new Map<string, { cash: number; credit: number; cheque: number }>();
-    inventoryAgg.forEach((entry) => {
-      const code = entry._id.supplierCode;
+    products.forEach((p) => {
+      const code = p.supplierCode.toUpperCase();
       if (!supplierTotals.has(code)) {
         supplierTotals.set(code, { cash: 0, credit: 0, cheque: 0 });
       }
       const current = supplierTotals.get(code)!;
-      if (entry._id.method === 'Credit') current.credit += entry.total;
-      else if (entry._id.method === 'Cheque') current.cheque += entry.total;
-      else current.cash += entry.total;
+      const total = p.quantity * Number(p.buyingPrice);
+      const pm = p.paymentMethod.toLowerCase();
+      if (pm.includes('credit')) current.credit += total;
+      else if (pm.includes('cheque')) current.cheque += total;
+      else current.cash += total;
     });
 
-    const filter: any = {};
+    const where: any = {};
     if (search) {
-      filter.$or = [
-        { supplierCode: { $regex: search, $options: 'i' } },
-        { name: { $regex: search, $options: 'i' } },
-        { contact: { $regex: search, $options: 'i' } },
+      where.OR = [
+        { supplierCode: { contains: search, mode: 'insensitive' } },
+        { name: { contains: search, mode: 'insensitive' } },
+        { contact: { contains: search, mode: 'insensitive' } },
       ];
     }
 
-    const suppliers = await Supplier.find(filter).sort({ name: 1 });
+    const suppliers = await prisma.supplier.findMany({
+      where,
+      orderBy: { name: 'asc' },
+    });
 
-    // Update synced totals in memory/response
     const result = suppliers.map((s) => {
-      const totals = supplierTotals.get(s.supplierCode) || { cash: 0, credit: 0, cheque: 0 };
+      const totals = supplierTotals.get(s.supplierCode.toUpperCase()) || { cash: 0, credit: 0, cheque: 0 };
       return {
-        id: s._id,
+        id: s.id,
+        _id: s.id,
         supplierCode: s.supplierCode,
         name: s.name,
         contact: s.contact || '',
-        cashTotal: totals.cash,
-        creditTotal: totals.credit,
-        chequeTotal: totals.cheque,
+        cashTotal: Math.round(totals.cash * 100) / 100,
+        creditTotal: Math.round(totals.credit * 100) / 100,
+        chequeTotal: Math.round(totals.cheque * 100) / 100,
         invoice: s.invoice || '',
         createdAt: s.createdAt,
       };
@@ -90,7 +79,10 @@ export async function createSupplier(req: Request, res: Response, next: NextFunc
 
     let finalCode = supplierCode?.trim().toUpperCase();
     if (!finalCode) {
-      const last = await Supplier.findOne({ supplierCode: /^SUP-/ }).sort({ supplierCode: -1 });
+      const last = await prisma.supplier.findFirst({
+        where: { supplierCode: { startsWith: 'SUP-' } },
+        orderBy: { supplierCode: 'desc' },
+      });
       let nextNum = 1;
       if (last && last.supplierCode) {
         const parts = last.supplierCode.split('-');
@@ -101,20 +93,27 @@ export async function createSupplier(req: Request, res: Response, next: NextFunc
       finalCode = `SUP-${String(nextNum).padStart(4, '0')}`;
     }
 
-    const supplier = await Supplier.create({
-      supplierCode: finalCode,
-      name: name.trim(),
-      contact: contact.trim(),
-      invoice: invoice.trim(),
+    const supplier = await prisma.supplier.create({
+      data: {
+        supplierCode: finalCode,
+        name: name.trim(),
+        contact: contact.trim(),
+        invoice: invoice.trim(),
+      },
     });
 
     res.status(201).json({
       success: true,
       message: 'Supplier created successfully.',
-      supplier,
+      supplier: {
+        ...supplier,
+        cashTotal: Number(supplier.cashTotal),
+        creditTotal: Number(supplier.creditTotal),
+        chequeTotal: Number(supplier.chequeTotal),
+      },
     });
   } catch (error: any) {
-    if (error.code === 11000) {
+    if (error.code === 'P2002') {
       res.status(409).json({ success: false, error: 'Supplier code already exists.' });
       return;
     }
@@ -124,64 +123,80 @@ export async function createSupplier(req: Request, res: Response, next: NextFunc
 
 export async function updateSupplier(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const { name, contact, invoice } = req.body;
 
-    const supplier = await Supplier.findById(id);
-    if (!supplier) {
-      res.status(404).json({ success: false, error: 'Supplier not found.' });
-      return;
-    }
+    const data: any = {};
+    if (name) data.name = name.trim();
+    if (contact !== undefined) data.contact = contact.trim();
+    if (invoice !== undefined) data.invoice = invoice.trim();
 
-    if (name) supplier.name = name.trim();
-    if (contact !== undefined) supplier.contact = contact.trim();
-    if (invoice !== undefined) supplier.invoice = invoice.trim();
-
-    await supplier.save();
+    const supplier = await prisma.supplier.update({
+      where: { id },
+      data,
+    });
 
     res.json({
       success: true,
       message: 'Supplier updated successfully.',
-      supplier,
+      supplier: {
+        ...supplier,
+        cashTotal: Number(supplier.cashTotal),
+        creditTotal: Number(supplier.creditTotal),
+        chequeTotal: Number(supplier.chequeTotal),
+      },
     });
-  } catch (error) {
+  } catch (error: any) {
+    if (error.code === 'P2025') {
+      res.status(404).json({ success: false, error: 'Supplier not found.' });
+      return;
+    }
     next(error);
   }
 }
 
 export async function updateSupplierInvoice(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const { invoice = '' } = req.body;
 
-    const supplier = await Supplier.findByIdAndUpdate(
-      id,
-      { invoice: invoice.trim() },
-      { new: true }
-    );
+    const supplier = await prisma.supplier.update({
+      where: { id },
+      data: { invoice: invoice.trim() },
+    });
 
-    if (!supplier) {
+    res.json({
+      success: true,
+      message: 'Supplier invoice memo updated.',
+      supplier: {
+        ...supplier,
+        cashTotal: Number(supplier.cashTotal),
+        creditTotal: Number(supplier.creditTotal),
+        chequeTotal: Number(supplier.chequeTotal),
+      },
+    });
+  } catch (error: any) {
+    if (error.code === 'P2025') {
       res.status(404).json({ success: false, error: 'Supplier not found.' });
       return;
     }
-
-    res.json({ success: true, message: 'Supplier invoice memo updated.', supplier });
-  } catch (error) {
     next(error);
   }
 }
 
 export async function deleteSupplier(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { id } = req.params;
-    const supplier = await Supplier.findByIdAndDelete(id);
-    if (!supplier) {
+    const id = req.params.id as string;
+    await prisma.supplier.delete({
+      where: { id },
+    });
+
+    res.json({ success: true, message: 'Supplier deleted successfully.' });
+  } catch (error: any) {
+    if (error.code === 'P2025') {
       res.status(404).json({ success: false, error: 'Supplier not found.' });
       return;
     }
-
-    res.json({ success: true, message: 'Supplier deleted successfully.' });
-  } catch (error) {
     next(error);
   }
 }
@@ -192,28 +207,35 @@ export async function getSupplierMovements(req: Request, res: Response, next: Ne
     const paymentMethod = (req.query.paymentMethod as string)?.trim();
 
     const codeStr = (Array.isArray(supplierCode) ? supplierCode[0] : supplierCode || '').toUpperCase();
-    const filter: any = { supplierCode: codeStr };
+    const where: any = {
+      supplierCode: { equals: codeStr, mode: 'insensitive' },
+    };
     if (paymentMethod && paymentMethod !== 'All') {
-      filter.paymentMethod = paymentMethod;
+      where.paymentMethod = { equals: paymentMethod, mode: 'insensitive' };
     }
 
-    const movements = await StockMovement.find(filter).sort({ movedAt: -1 });
+    const movements = await prisma.stockMovement.findMany({
+      where,
+      orderBy: { movedAt: 'desc' },
+    });
 
     let totalAmount = 0;
     let unsettledAmount = 0;
 
     const formatted = movements.map((m) => {
-      const lineTotal = m.quantity * m.buyingPrice;
+      const buyingPrice = Number(m.buyingPrice);
+      const lineTotal = m.quantity * buyingPrice;
       totalAmount += lineTotal;
       const isSettled = Boolean(m.settledAt);
       if (!isSettled) unsettledAmount += lineTotal;
 
       return {
-        id: m._id,
+        id: m.id,
+        _id: m.id,
         movedAt: m.movedAt,
         itemId: m.itemId,
         quantity: m.quantity,
-        buyingPrice: m.buyingPrice,
+        buyingPrice,
         total: lineTotal,
         paymentMethod: m.paymentMethod,
         isSettled,
@@ -225,8 +247,8 @@ export async function getSupplierMovements(req: Request, res: Response, next: Ne
       success: true,
       movements: formatted,
       summary: {
-        totalAmount,
-        unsettledAmount,
+        totalAmount: Math.round(totalAmount * 100) / 100,
+        unsettledAmount: Math.round(unsettledAmount * 100) / 100,
       },
     });
   } catch (error) {
@@ -243,10 +265,15 @@ export async function settleMovements(req: Request, res: Response, next: NextFun
     }
 
     const now = new Date();
-    await StockMovement.updateMany(
-      { _id: { $in: movementIds }, settledAt: null },
-      { $set: { settledAt: now } }
-    );
+    await prisma.stockMovement.updateMany({
+      where: {
+        id: { in: movementIds },
+        settledAt: null,
+      },
+      data: {
+        settledAt: now,
+      },
+    });
 
     res.json({
       success: true,

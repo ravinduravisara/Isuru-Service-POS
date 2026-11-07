@@ -1,15 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import { app } from '../src/app.js';
-import { connectDB, disconnectDB } from '../src/config/database.js';
-import { Service } from '../src/models/Service.js';
-import { Product } from '../src/models/Product.js';
-import { Invoice } from '../src/models/Invoice.js';
-import { Customer } from '../src/models/Customer.js';
-import { Vehicle } from '../src/models/Vehicle.js';
-import { Supplier } from '../src/models/Supplier.js';
-import { SupplyInvoice } from '../src/models/SupplyInvoice.js';
-import { StockMovement } from '../src/models/StockMovement.js';
+import { connectDB, disconnectDB, prisma } from '../src/config/database.js';
 
 let adminToken = '';
 let staffToken = '';
@@ -102,7 +94,6 @@ describe('2. Role-Based Permissions & Guarding', () => {
 
 describe('3. Customers & Vehicles CRUD & Autocomplete', () => {
   let createdCustId = '';
-  let createdVehId = '';
 
   it('POST /api/v1/customers should register customer (Staff/Cashier allowed)', async () => {
     const res = await request(app)
@@ -133,7 +124,6 @@ describe('3. Customers & Vehicles CRUD & Autocomplete', () => {
       });
     expect(res.status).toBe(201);
     expect(res.body.vehicle.vehicleNo).toContain('WP-CAB-');
-    createdVehId = res.body.vehicle._id;
   });
 
   it('GET /api/v1/customers/search should autocomplete customer by query', async () => {
@@ -165,15 +155,13 @@ describe('3. Customers & Vehicles CRUD & Autocomplete', () => {
   });
 
   it('DELETE /api/v1/customers/:id should delete customer (Admin only)', async () => {
-    // Delete the customer
     const res = await request(app)
       .delete(`/api/v1/customers/${createdCustId}`)
       .set('Authorization', `Bearer ${adminToken}`);
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
 
-    // Verify deleted
-    const check = await Customer.findById(createdCustId);
+    const check = await prisma.customer.findUnique({ where: { id: createdCustId } });
     expect(check).toBeNull();
   });
 });
@@ -345,7 +333,7 @@ describe('6. Suppliers & Supply Invoices (Purchases) CRUD', () => {
   });
 
   it('POST /api/v1/supply-invoices should record purchase and increment stock', async () => {
-    const prodBefore = await Product.findOne({ itemName: 'Engine Oil' });
+    const prodBefore = await prisma.product.findFirst({ where: { itemName: 'Engine Oil' } });
     const qtyBefore = prodBefore?.quantity || 0;
 
     const res = await request(app)
@@ -366,29 +354,29 @@ describe('6. Suppliers & Supply Invoices (Purchases) CRUD', () => {
     expect(res.status).toBe(201);
 
     // Verify stock incremented by 10
-    const prodAfter = await Product.findOne({ itemId: prodBefore?.itemId });
+    const prodAfter = await prisma.product.findUnique({ where: { itemId: prodBefore?.itemId } });
     expect(prodAfter?.quantity).toBe(qtyBefore + 10);
   });
 
   it('POST /api/v1/suppliers/settle should settle supplier movements', async () => {
-    const movements = await StockMovement.find({ supplierCode });
+    const movements = await prisma.stockMovement.findMany({ where: { supplierCode } });
     if (movements.length > 0) {
       const res = await request(app)
         .post('/api/v1/suppliers/settle')
         .set('Authorization', `Bearer ${adminToken}`)
-        .send({ movementIds: [movements[0]._id.toString()] });
+        .send({ movementIds: [movements[0].id] });
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
     }
   });
 
   it('POST /api/v1/supply-invoices/settle should settle mature cheque supply invoices', async () => {
-    const supplyInvs = await SupplyInvoice.find({ supplierCode });
+    const supplyInvs = await prisma.supplyInvoice.findMany({ where: { supplierCode } });
     if (supplyInvs.length > 0) {
       const res = await request(app)
         .post('/api/v1/supply-invoices/settle')
         .set('Authorization', `Bearer ${adminToken}`)
-        .send({ invoiceIds: [supplyInvs[0]._id.toString()] });
+        .send({ invoiceIds: [supplyInvs[0].id] });
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
     }
@@ -401,7 +389,7 @@ describe('7. POS Billing & Invoicing Engine (Complete Workflow)', () => {
   let initialStock = 0;
 
   it('POST /api/v1/invoices should create invoice with stock deduction and cost freezing', async () => {
-    const prod = await Product.findOne({ itemName: 'Engine Oil' });
+    const prod = await prisma.product.findFirst({ where: { itemName: 'Engine Oil' } });
     expect(prod).toBeDefined();
     testItemId = prod!.itemId;
     initialStock = prod!.quantity;
@@ -449,7 +437,7 @@ describe('7. POS Billing & Invoicing Engine (Complete Workflow)', () => {
     expect(oilItem.buyingPrice).toBeGreaterThan(0);
 
     // Verify stock deducted by 4
-    const prodAfter = await Product.findOne({ itemId: testItemId });
+    const prodAfter = await prisma.product.findUnique({ where: { itemId: testItemId } });
     expect(prodAfter?.quantity).toBe(initialStock - 4);
   });
 
@@ -458,7 +446,7 @@ describe('7. POS Billing & Invoicing Engine (Complete Workflow)', () => {
       .get(`/api/v1/invoices/${createdInvoiceId}`)
       .set('Authorization', `Bearer ${staffToken}`);
     expect(res.status).toBe(200);
-    expect(res.body.invoice.billNo).toMatch(/^INV-\d{14}$/);
+    expect(res.body.invoice.billNo).toMatch(/^INV-\d{14}/);
     expect(res.body.invoice.totalAmount).toBe(53000);
     expect(res.body.invoice.items.length).toBe(2);
   });
@@ -472,7 +460,7 @@ describe('7. POS Billing & Invoicing Engine (Complete Workflow)', () => {
   });
 
   it('DELETE /api/v1/invoices/:id should delete invoice and restore stock', async () => {
-    const prodBeforeDelete = await Product.findOne({ itemId: testItemId });
+    const prodBeforeDelete = await prisma.product.findUnique({ where: { itemId: testItemId } });
     const stockBeforeDelete = prodBeforeDelete?.quantity || 0;
 
     const res = await request(app)
@@ -482,7 +470,7 @@ describe('7. POS Billing & Invoicing Engine (Complete Workflow)', () => {
     expect(res.body.success).toBe(true);
 
     // Stock was 4 items on that invoice, so stock must be restored by 4
-    const prodAfterDelete = await Product.findOne({ itemId: testItemId });
+    const prodAfterDelete = await prisma.product.findUnique({ where: { itemId: testItemId } });
     expect(prodAfterDelete?.quantity).toBe(stockBeforeDelete + 4);
   });
 });

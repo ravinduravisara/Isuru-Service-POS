@@ -1,6 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { Invoice } from '../../models/Invoice.js';
-import { SupplyInvoice } from '../../models/SupplyInvoice.js';
+import { prisma } from '../../config/prisma.js';
 
 export async function getProfitStatement(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -28,9 +27,15 @@ export async function getProfitStatement(req: Request, res: Response, next: Next
     }
 
     // 1. Fetch invoices in range
-    const invoices = await Invoice.find({
-      dateTime: { $gte: fromDate, $lte: toDate },
-    }).sort({ dateTime: -1, _id: -1 });
+    const invoices = await prisma.invoice.findMany({
+      where: {
+        dateTime: { gte: fromDate, lte: toDate },
+      },
+      include: {
+        items: true,
+      },
+      orderBy: [{ dateTime: 'desc' }, { id: 'desc' }],
+    });
 
     let serviceRevenue = 0;
     let partsRevenue = 0;
@@ -40,8 +45,10 @@ export async function getProfitStatement(req: Request, res: Response, next: Next
     for (const inv of invoices) {
       for (const item of inv.items) {
         const hasInventoryItem = Boolean(item.itemId && item.itemId.trim());
-        const revenue = item.amount;
-        const cost = hasInventoryItem ? Math.round(item.qty * item.buyingPrice * 100) / 100 : 0;
+        const revenue = Number(item.amount);
+        const itemQty = item.qty;
+        const itemBuyingPrice = Number(item.buyingPrice);
+        const cost = hasInventoryItem ? Math.round(itemQty * itemBuyingPrice * 100) / 100 : 0;
         const profit = Math.round((revenue - cost) * 100) / 100;
 
         if (hasInventoryItem) {
@@ -60,8 +67,8 @@ export async function getProfitStatement(req: Request, res: Response, next: Next
           itemId: item.itemId || '',
           description: item.description || '',
           qty: item.qty,
-          sellingPrice: item.rate,
-          buyingPrice: hasInventoryItem ? item.buyingPrice : 0,
+          sellingPrice: Number(item.rate),
+          buyingPrice: hasInventoryItem ? itemBuyingPrice : 0,
           revenue,
           cost,
           profit,
@@ -77,11 +84,21 @@ export async function getProfitStatement(req: Request, res: Response, next: Next
     const profitMargin = totalSalesRevenue > 0 ? Math.round((grossProfit / totalSalesRevenue) * 1000) / 10 : 0;
 
     // 2. Fetch total purchases from Supply Invoices in range
-    const purchasesAgg = await SupplyInvoice.aggregate([
-      { $match: { createdAt: { $gte: fromDate, $lte: toDate } } },
-      { $group: { _id: null, total: { $sum: { $multiply: ['$quantity', '$buyingPrice'] } } } },
-    ]);
-    const totalPurchases = Math.round((purchasesAgg[0]?.total || 0) * 100) / 100;
+    const supplyInvoices = await prisma.supplyInvoice.findMany({
+      where: {
+        createdAt: { gte: fromDate, lte: toDate },
+      },
+      select: {
+        quantity: true,
+        buyingPrice: true,
+      },
+    });
+
+    let totalPurchases = 0;
+    for (const si of supplyInvoices) {
+      totalPurchases += si.quantity * Number(si.buyingPrice);
+    }
+    totalPurchases = Math.round(totalPurchases * 100) / 100;
     const netProfitAfterPurchases = Math.round((grossProfit - totalPurchases) * 100) / 100;
 
     res.json({

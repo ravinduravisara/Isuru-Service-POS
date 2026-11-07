@@ -1,0 +1,205 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id           String   @id @default(uuid())
+  username     String   @unique
+  passwordHash String
+  role         String   @default("User") // "Admin" | "User"
+  fullName     String?  @default("")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("users")
+}
+
+model Setting {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     String
+  updatedAt DateTime @updatedAt
+
+  @@map("settings")
+}
+
+model Customer {
+  id        String    @id @default(uuid())
+  legacyId  Int?
+  name      String
+  phone     String    @default("")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  vehicles  Vehicle[]
+  invoices  Invoice[]
+
+  @@index([name])
+  @@index([phone])
+  @@map("customers")
+}
+
+model Vehicle {
+  id          String    @id @default(uuid())
+  legacyId    Int?
+  customerId  String
+  customer    Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  vehicleNo   String
+  vehicleType String    @default("Others")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  invoices    Invoice[]
+
+  @@index([customerId])
+  @@index([vehicleNo])
+  @@map("vehicles")
+}
+
+model Service {
+  id          String   @id @default(uuid())
+  legacyId    Int?
+  category    String   @default("Others")
+  name        String
+  price       Decimal  @default(0) @db.Decimal(12, 2)
+  description String   @default("")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([category, name])
+  @@index([category])
+  @@map("services")
+}
+
+model Product {
+  id            String   @id @default(uuid())
+  legacyId      Int?
+  itemId        String   @unique
+  itemName      String   // Category name e.g. Engine Oil
+  brand         String   @default("")
+  quantity      Int      @default(0)
+  unitPrice     Decimal  @default(0) @db.Decimal(12, 2)
+  buyingPrice   Decimal  @default(0) @db.Decimal(12, 2)
+  supplierCode  String   @default("")
+  paymentMethod String   @default("Cash")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([itemId])
+  @@index([itemName])
+  @@index([brand])
+  @@index([supplierCode])
+  @@map("products")
+}
+
+model Supplier {
+  id           String   @id @default(uuid())
+  legacyId     Int?
+  supplierCode String   @unique
+  name         String
+  contact      String   @default("")
+  cashTotal    Decimal  @default(0) @db.Decimal(12, 2)
+  creditTotal  Decimal  @default(0) @db.Decimal(12, 2)
+  chequeTotal  Decimal  @default(0) @db.Decimal(12, 2)
+  invoice      String   @default("")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([supplierCode])
+  @@index([name])
+  @@map("suppliers")
+}
+
+model SupplyInvoice {
+  id            String    @id @default(uuid())
+  legacyId      Int?
+  invoiceNo     String
+  supplierCode  String
+  itemId        String
+  buyingPrice   Decimal   @default(0) @db.Decimal(12, 2)
+  quantity      Int       @default(0)
+  paymentStatus String    @default("Cash") // Cash, Credit, Cheque
+  chequeNo      String    @default("")
+  branchCode    String    @default("")
+  bankCode      String    @default("")
+  valueDate     DateTime?
+  settledAt     DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([invoiceNo])
+  @@index([supplierCode])
+  @@index([itemId])
+  @@index([paymentStatus])
+  @@map("supply_invoices")
+}
+
+model StockMovement {
+  id            String    @id @default(uuid())
+  legacyId      Int?
+  itemId        String
+  supplierCode  String    @default("")
+  quantity      Int       @default(0)
+  unitPrice     Decimal   @default(0) @db.Decimal(12, 2)
+  buyingPrice   Decimal   @default(0) @db.Decimal(12, 2)
+  paymentMethod String    @default("Cash")
+  movedAt       DateTime  @default(now())
+  settledAt     DateTime?
+
+  @@index([itemId])
+  @@index([supplierCode])
+  @@index([movedAt])
+  @@map("stock_movements")
+}
+
+model Invoice {
+  id               String        @id @default(uuid())
+  legacyId         Int?
+  billNo           String        @unique
+  customerId       String?
+  customer         Customer?     @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  customerName     String
+  customerPhone    String        @default("")
+  vehicleId        String?
+  vehicle          Vehicle?      @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
+  vehicleNo        String
+  vehicleType      String        @default("Others")
+  dateTime         DateTime      @default(now())
+  subtotalAmount   Decimal       @default(0) @db.Decimal(12, 2)
+  discountAmount   Decimal       @default(0) @db.Decimal(12, 2)
+  totalAmount      Decimal       @default(0) @db.Decimal(12, 2)
+  paymentMethod    String        @default("Cash")
+  paymentStatus    String        @default("Paid")
+  paymentSettledAt DateTime?
+  items            InvoiceItem[]
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  @@index([billNo])
+  @@index([customerName])
+  @@index([vehicleNo])
+  @@index([dateTime])
+  @@index([paymentMethod])
+  @@index([paymentStatus])
+  @@map("invoices")
+}
+
+model InvoiceItem {
+  id          String   @id @default(uuid())
+  invoiceId   String
+  invoice     Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  service     String
+  itemId      String   @default("")
+  description String   @default("")
+  qty         Int      @default(1)
+  rate        Decimal  @default(0) @db.Decimal(12, 2)
+  amount      Decimal  @default(0) @db.Decimal(12, 2)
+  buyingPrice Decimal  @default(0) @db.Decimal(12, 2)
+  createdAt   DateTime @default(now())
+
+  @@index([invoiceId])
+  @@index([itemId])
+  @@map("invoice_items")
+}
