@@ -180,3 +180,197 @@ export async function deleteService(req: Request, res: Response, next: NextFunct
     next(error);
   }
 }
+
+const DEFAULT_SERVICE_PRESETS = [
+  'Service Charge',
+  'Engine Wash',
+  'Engine Chemical',
+  'Grease',
+  'Penetrating Oil',
+  'Diesel',
+  'Kerosene',
+  'High Pressure',
+  'Chemical',
+  'Body Wash',
+  'Grease Full',
+  'FullService',
+  'Custom',
+  'Diesel Filter',
+  'Air filter',
+  'Cabin Filter',
+  'Engine Oil',
+  'Gear Oil',
+  'Differencel Oil',
+  'Transfer Box Oil',
+  'Break Oil',
+  'Hydralauic Oil',
+  'Power Sterling Oil',
+  'Battery Water',
+  'Radiator Coolant',
+  'Radiator Plask',
+  'Wash',
+  'Car Wash',
+  'Wapper Blade',
+];
+
+export async function getServicePresets(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const setting = await prisma.setting.findUnique({
+      where: { key: 'service_presets' },
+    });
+
+    let presets: string[] = DEFAULT_SERVICE_PRESETS;
+    if (setting?.value) {
+      try {
+        const parsed = JSON.parse(setting.value);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          presets = parsed;
+        }
+      } catch {
+        presets = [...DEFAULT_SERVICE_PRESETS];
+      }
+    } else {
+      await prisma.setting.upsert({
+        where: { key: 'service_presets' },
+        update: {},
+        create: { key: 'service_presets', value: JSON.stringify(DEFAULT_SERVICE_PRESETS) },
+      });
+    }
+
+    res.json({ success: true, presets });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function createServicePreset(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { name } = req.body;
+    if (!name || !name.trim()) {
+      res.status(400).json({ success: false, error: 'Preset name is required.' });
+      return;
+    }
+
+    const cleanName = name.trim();
+
+    const setting = await prisma.setting.findUnique({
+      where: { key: 'service_presets' },
+    });
+    let presets: string[] = DEFAULT_SERVICE_PRESETS;
+    if (setting?.value) {
+      try {
+        presets = JSON.parse(setting.value);
+      } catch {
+        presets = [...DEFAULT_SERVICE_PRESETS];
+      }
+    }
+
+    if (presets.some((p) => p.toLowerCase() === cleanName.toLowerCase())) {
+      res.status(409).json({ success: false, error: `Preset "${cleanName}" already exists.` });
+      return;
+    }
+
+    presets.push(cleanName);
+
+    await prisma.setting.upsert({
+      where: { key: 'service_presets' },
+      update: { value: JSON.stringify(presets) },
+      create: { key: 'service_presets', value: JSON.stringify(presets) },
+    });
+
+    res.status(201).json({
+      success: true,
+      message: `Preset "${cleanName}" added successfully.`,
+      presets,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function updateServicePreset(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const oldName = decodeURIComponent(req.params.name as string).trim();
+    const { newName } = req.body;
+
+    if (!newName || !newName.trim()) {
+      res.status(400).json({ success: false, error: 'New preset name is required.' });
+      return;
+    }
+
+    const cleanNewName = newName.trim();
+
+    const setting = await prisma.setting.findUnique({
+      where: { key: 'service_presets' },
+    });
+    let presets: string[] = DEFAULT_SERVICE_PRESETS;
+    if (setting?.value) {
+      try {
+        presets = JSON.parse(setting.value);
+      } catch {
+        presets = [...DEFAULT_SERVICE_PRESETS];
+      }
+    }
+
+    const index = presets.findIndex((p) => p.toLowerCase() === oldName.toLowerCase());
+    if (index === -1) {
+      res.status(404).json({ success: false, error: `Preset "${oldName}" not found.` });
+      return;
+    }
+
+    if (presets.some((p, idx) => idx !== index && p.toLowerCase() === cleanNewName.toLowerCase())) {
+      res.status(409).json({ success: false, error: `Preset "${cleanNewName}" already exists.` });
+      return;
+    }
+
+    presets[index] = cleanNewName;
+
+    await prisma.setting.upsert({
+      where: { key: 'service_presets' },
+      update: { value: JSON.stringify(presets) },
+      create: { key: 'service_presets', value: JSON.stringify(presets) },
+    });
+
+    res.json({
+      success: true,
+      message: `Preset renamed from "${oldName}" to "${cleanNewName}".`,
+      presets,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function deleteServicePreset(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const name = decodeURIComponent(req.params.name as string).trim();
+
+    const setting = await prisma.setting.findUnique({
+      where: { key: 'service_presets' },
+    });
+    let presets: string[] = DEFAULT_SERVICE_PRESETS;
+    if (setting?.value) {
+      try {
+        presets = JSON.parse(setting.value);
+      } catch {
+        presets = [...DEFAULT_SERVICE_PRESETS];
+      }
+    }
+
+    presets = presets.filter((p) => p.toLowerCase() !== name.toLowerCase());
+
+    await prisma.setting.upsert({
+      where: { key: 'service_presets' },
+      update: { value: JSON.stringify(presets) },
+      create: { key: 'service_presets', value: JSON.stringify(presets) },
+    });
+
+    res.json({
+      success: true,
+      message: `Preset "${name}" removed successfully.`,
+      presets,
+    });
+  } catch (error) {
+    next(error);
+  }
+}

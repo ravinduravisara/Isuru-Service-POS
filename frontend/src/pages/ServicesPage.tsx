@@ -13,6 +13,7 @@ import {
   Check,
   X,
   Car,
+  Tag,
 } from 'lucide-react';
 import { Modal } from '../components/ui/Modal';
 import { Badge } from '../components/ui/Badge';
@@ -20,17 +21,59 @@ import { useAuthStore } from '../store/authStore';
 
 const DEFAULT_CATEGORIES: VehicleType[] = [
   'Car',
-  'Bike',
-  'Van',
+  'Three-Wheeler',
+  'Van/Cab',
+  '10 1/2 Lorry',
+  '14 1/2 Lorry/ 10 1/2,16 1/2/Boom',
+  'Ten-Wheel Lorry',
+  'Tank Lorry / Cube 3,4 5Pc wheel/Tipper',
+  'Cube Lorry / Small Tipper',
+  'Batto Lorry',
   'Bus',
-  'Lorry',
+  'Bus (small)',
+  'Bike',
+  'Machine -30',
+  'Custom',
   'Others',
+];
+
+const DEFAULT_PRESETS: string[] = [
+  'Service Charge',
+  'Engine Wash',
+  'Engine Chemical',
+  'Grease',
+  'Penetrating Oil',
+  'Diesel',
+  'Kerosene',
+  'High Pressure',
+  'Chemical',
+  'Body Wash',
+  'Grease Full',
+  'FullService',
+  'Custom',
+  'Diesel Filter',
+  'Air filter',
+  'Cabin Filter',
+  'Engine Oil',
+  'Gear Oil',
+  'Differencel Oil',
+  'Transfer Box Oil',
+  'Break Oil',
+  'Hydralauic Oil',
+  'Power Sterling Oil',
+  'Battery Water',
+  'Radiator Coolant',
+  'Radiator Plask',
+  'Wash',
+  'Car Wash',
+  'Wapper Blade',
 ];
 
 export const ServicesPage: React.FC = () => {
   const { isAdmin } = useAuthStore();
 
   const [categories, setCategories] = useState<VehicleType[]>(DEFAULT_CATEGORIES);
+  const [presets, setPresets] = useState<string[]>(DEFAULT_PRESETS);
   const [services, setServices] = useState<Service[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<VehicleType | 'All'>('All');
   const [search, setSearch] = useState('');
@@ -47,6 +90,13 @@ export const ServicesPage: React.FC = () => {
   const [renameInput, setRenameInput] = useState('');
   const [categoryError, setCategoryError] = useState<string | null>(null);
 
+  // Preset Management Modal state
+  const [isPresetModalOpen, setIsPresetModalOpen] = useState(false);
+  const [newPresetInput, setNewPresetInput] = useState('');
+  const [editingPreset, setEditingPreset] = useState<string | null>(null);
+  const [renamePresetInput, setRenamePresetInput] = useState('');
+  const [presetError, setPresetError] = useState<string | null>(null);
+
   // Form fields
   const [formCategory, setFormCategory] = useState<VehicleType>('Car');
   const [formName, setFormName] = useState('');
@@ -59,6 +109,7 @@ export const ServicesPage: React.FC = () => {
 
   useEffect(() => {
     fetchCategories();
+    fetchPresets();
   }, []);
 
   useEffect(() => {
@@ -73,6 +124,17 @@ export const ServicesPage: React.FC = () => {
       }
     } catch (err) {
       console.error('Failed to load vehicle categories', err);
+    }
+  };
+
+  const fetchPresets = async () => {
+    try {
+      const res = await api.get('/services/presets');
+      if (res.data?.presets && Array.isArray(res.data.presets)) {
+        setPresets(res.data.presets);
+      }
+    } catch (err) {
+      console.error('Failed to load service presets', err);
     }
   };
 
@@ -97,7 +159,9 @@ export const ServicesPage: React.FC = () => {
     setFormCategory(selectedCategory === 'All' ? (categories[0] || 'Car') : selectedCategory);
     setFormName('');
     setFormPrice('');
-    setFormDescription('');
+    setFormDescription(
+      selectedCategory === 'Custom' ? 'Custom Service / Consumable' : 'Full Service'
+    );
     setIsModalOpen(true);
   };
 
@@ -251,6 +315,75 @@ export const ServicesPage: React.FC = () => {
     }
   };
 
+  // Preset Management Handlers
+  const handleAddPreset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const clean = newPresetInput.trim();
+    if (!clean) return;
+    setPresetError(null);
+
+    try {
+      const res = await api.post('/services/presets', { name: clean });
+      if (res.data?.presets) {
+        setPresets(res.data.presets);
+      } else {
+        await fetchPresets();
+      }
+      setNewPresetInput('');
+      setStatusMessage({ type: 'success', text: `Preset "${clean}" added successfully.` });
+    } catch (err: any) {
+      setPresetError(err.response?.data?.error || 'Failed to add preset.');
+    }
+  };
+
+  const handleStartRenamePreset = (name: string) => {
+    setEditingPreset(name);
+    setRenamePresetInput(name);
+    setPresetError(null);
+  };
+
+  const handleSaveRenamePreset = async (oldName: string) => {
+    const clean = renamePresetInput.trim();
+    if (!clean || clean.toLowerCase() === oldName.toLowerCase()) {
+      setEditingPreset(null);
+      return;
+    }
+    setPresetError(null);
+
+    try {
+      const res = await api.put(`/services/presets/${encodeURIComponent(oldName)}`, { newName: clean });
+      if (res.data?.presets) {
+        setPresets(res.data.presets);
+      } else {
+        await fetchPresets();
+      }
+      if (formName === oldName) {
+        setFormName(clean);
+      }
+      setEditingPreset(null);
+      setStatusMessage({ type: 'success', text: `Preset renamed to "${clean}".` });
+    } catch (err: any) {
+      setPresetError(err.response?.data?.error || 'Failed to rename preset.');
+    }
+  };
+
+  const handleDeletePreset = async (name: string) => {
+    if (!window.confirm(`Are you sure you want to remove preset "${name}"?`)) return;
+    setPresetError(null);
+
+    try {
+      const res = await api.delete(`/services/presets/${encodeURIComponent(name)}`);
+      if (res.data?.presets) {
+        setPresets(res.data.presets);
+      } else {
+        await fetchPresets();
+      }
+      setStatusMessage({ type: 'success', text: `Preset "${name}" removed.` });
+    } catch (err: any) {
+      setPresetError(err.response?.data?.error || 'Failed to delete preset.');
+    }
+  };
+
   return (
     <div className="space-y-5">
       {/* Header */}
@@ -258,12 +391,25 @@ export const ServicesPage: React.FC = () => {
         <div>
           <h2 className="text-xl font-bold text-slate-900">Service &amp; Labour Rate Catalog</h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            Configure vehicle category-specific service labor rates (FullService, Body Wash, Custom), pricing, and descriptions.
+            Configure vehicle category-specific service labor rates (Full Service, Body Wash, Custom), pricing, and descriptions.
           </p>
         </div>
 
         {isAdmin() && (
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
+            <button
+              onClick={() => {
+                setPresetError(null);
+                setEditingPreset(null);
+                setIsPresetModalOpen(true);
+              }}
+              className="flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold border border-slate-300 transition-colors cursor-pointer"
+              title="Add, edit or delete service presets"
+            >
+              <Tag className="w-3.5 h-3.5 text-slate-500" />
+              <span>Manage Presets</span>
+            </button>
+
             <button
               onClick={() => {
                 setCategoryError(null);
@@ -372,7 +518,7 @@ export const ServicesPage: React.FC = () => {
                 <th className="px-5 py-3 w-32">Category</th>
                 <th className="px-5 py-3">Service Name</th>
                 <th className="px-5 py-3 text-right w-36">Standard Rate (LKR)</th>
-                <th className="px-5 py-3">Description</th>
+                <th className="px-5 py-3">Tag / Notes</th>
                 {isAdmin() && <th className="px-5 py-3 text-right w-24">Actions</th>}
               </tr>
             </thead>
@@ -399,11 +545,11 @@ export const ServicesPage: React.FC = () => {
                             ? 'info'
                             : svc.category === 'Bike'
                             ? 'success'
-                            : svc.category === 'Van'
+                            : svc.category.includes('Van')
                             ? 'purple'
-                            : svc.category === 'Bus'
+                            : svc.category.includes('Bus')
                             ? 'warning'
-                            : svc.category === 'Lorry'
+                            : svc.category.includes('Lorry')
                             ? 'danger'
                             : 'neutral'
                         }
@@ -415,7 +561,15 @@ export const ServicesPage: React.FC = () => {
                     <td className="px-5 py-3.5 text-right font-black text-slate-900 font-mono">
                       {svc.price.toLocaleString('en-LK', { minimumFractionDigits: 2 })}
                     </td>
-                    <td className="px-5 py-3.5 text-slate-500">{svc.description || '—'}</td>
+                    <td className="px-5 py-3.5 text-slate-500">
+                      {svc.description ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-700">
+                          {svc.description}
+                        </span>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
                     {isAdmin() && (
                       <td className="px-5 py-3.5 text-right">
                         <div className="flex items-center justify-end gap-1.5">
@@ -484,44 +638,70 @@ export const ServicesPage: React.FC = () => {
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Service / Labour Name *
-            </label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-xs font-semibold text-slate-700">
+                Service / Labour Name *
+              </label>
+              {isAdmin() && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPresetError(null);
+                    setEditingPreset(null);
+                    setIsPresetModalOpen(true);
+                  }}
+                  className="text-xs text-blue-600 hover:underline font-semibold cursor-pointer flex items-center gap-1"
+                >
+                  <Tag className="w-3 h-3" />
+                  <span>+ Manage Presets</span>
+                </button>
+              )}
+            </div>
             <input
               type="text"
               required
               value={formName}
               onChange={(e) => setFormName(e.target.value)}
-              placeholder="e.g. FullService, Body Wash, Custom"
+              placeholder="e.g. Service Charge, Engine Wash, Body Wash..."
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:border-blue-500"
             />
-            <div className="flex flex-wrap items-center gap-1.5 mt-2">
-              <span className="text-[11px] text-slate-400">Presets:</span>
-              {[
-                'Service Charge',
-                'Engine Wash',
-                'Engine Chemical',
-                'Grease',
-                'Penetrating Oil',
-                'Diesel',
-                'Kerosene',
-                'High Pressure',
-                'Chemical',
-                'Body Wash',
-              ].map((preset) => (
-                <button
-                  key={preset}
-                  type="button"
-                  onClick={() => setFormName(preset)}
-                  className={`px-2 py-0.5 rounded text-[11px] font-medium border transition-colors cursor-pointer ${
-                    formName === preset
-                      ? 'bg-blue-50 border-blue-300 text-blue-700 font-bold'
-                      : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
-                  }`}
-                >
-                  {preset}
-                </button>
-              ))}
+
+            {/* Dynamic Preset Chips */}
+            <div className="mt-2.5 p-2 bg-slate-50 border border-slate-200/80 rounded-lg">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                  Quick Presets ({presets.length})
+                </span>
+                {isAdmin() && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPresetError(null);
+                      setEditingPreset(null);
+                      setIsPresetModalOpen(true);
+                    }}
+                    className="text-[11px] text-blue-600 hover:underline cursor-pointer"
+                  >
+                    Edit / Delete Presets
+                  </button>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5 max-h-28 overflow-y-auto pr-1">
+                {presets.map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => setFormName(preset)}
+                    className={`px-2 py-0.5 rounded text-[11px] font-medium border transition-colors cursor-pointer ${
+                      formName === preset
+                        ? 'bg-blue-600 border-blue-600 text-white font-bold shadow-2xs'
+                        : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100 hover:border-slate-300'
+                    }`}
+                  >
+                    {preset}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
@@ -542,14 +722,32 @@ export const ServicesPage: React.FC = () => {
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Description / Notes
-            </label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-xs font-semibold text-slate-700">
+                Package / Tag / Notes
+              </label>
+              <div className="flex items-center gap-1.5">
+                {['Full Service', 'Body Wash', 'Custom Part'].map((tag) => (
+                  <button
+                    key={tag}
+                    type="button"
+                    onClick={() => setFormDescription(tag)}
+                    className={`px-1.5 py-0.5 text-[10px] rounded border transition-colors cursor-pointer ${
+                      formDescription === tag
+                        ? 'bg-indigo-50 border-indigo-300 text-indigo-700 font-bold'
+                        : 'bg-slate-50 border-slate-200 text-slate-500 hover:bg-slate-100'
+                    }`}
+                  >
+                    {tag}
+                  </button>
+                ))}
+              </div>
+            </div>
             <textarea
               rows={2}
               value={formDescription}
               onChange={(e) => setFormDescription(e.target.value)}
-              placeholder="Optional notes or instructions..."
+              placeholder="e.g. Full Service, Body Wash, or consumable details..."
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:border-blue-500"
             />
           </div>
@@ -570,6 +768,131 @@ export const ServicesPage: React.FC = () => {
             </button>
           </div>
         </form>
+      </Modal>
+
+      {/* Manage Service Presets Modal */}
+      <Modal
+        isOpen={isPresetModalOpen}
+        onClose={() => setIsPresetModalOpen(false)}
+        title="Manage Service Name Presets"
+        subtitle="Add, edit/rename, or remove service name presets used for quick rate configuration"
+      >
+        <div className="space-y-4">
+          {presetError && (
+            <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 text-xs rounded-lg flex items-center justify-between">
+              <span>{presetError}</span>
+              <button
+                type="button"
+                onClick={() => setPresetError(null)}
+                className="font-bold underline cursor-pointer"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {/* Add Preset Form */}
+          <form onSubmit={handleAddPreset} className="flex gap-2">
+            <input
+              type="text"
+              value={newPresetInput}
+              onChange={(e) => setNewPresetInput(e.target.value)}
+              placeholder="Add new preset (e.g. Radiator Flush, Polish, Tire Shine)..."
+              className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-xs text-slate-900 focus:outline-none focus:border-blue-500"
+            />
+            <button
+              type="submit"
+              disabled={!newPresetInput.trim()}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Add Preset</span>
+            </button>
+          </form>
+
+          {/* Existing Presets List */}
+          <div className="border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-72 overflow-y-auto">
+            {presets.map((preset) => {
+              const isRenaming = editingPreset === preset;
+
+              return (
+                <div
+                  key={preset}
+                  className="p-2.5 px-3 flex items-center justify-between gap-3 hover:bg-slate-50 transition-colors text-xs"
+                >
+                  {isRenaming ? (
+                    <div className="flex-1 flex items-center gap-2">
+                      <input
+                        type="text"
+                        autoFocus
+                        value={renamePresetInput}
+                        onChange={(e) => setRenamePresetInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleSaveRenamePreset(preset);
+                          if (e.key === 'Escape') setEditingPreset(null);
+                        }}
+                        className="flex-1 px-2.5 py-1.5 border border-blue-500 rounded text-xs text-slate-900 focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleSaveRenamePreset(preset)}
+                        className="p-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded cursor-pointer"
+                        title="Save rename"
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingPreset(null)}
+                        className="p-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded cursor-pointer"
+                        title="Cancel"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <Tag className="w-3 h-3 text-slate-400" />
+                        <span className="font-semibold text-slate-900">{preset}</span>
+                      </div>
+
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleStartRenamePreset(preset)}
+                          className="p-1.5 text-slate-400 hover:text-slate-800 hover:bg-slate-100 rounded transition-colors cursor-pointer"
+                          title="Rename Preset"
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeletePreset(preset)}
+                          className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-colors cursor-pointer"
+                          title="Delete Preset"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="flex justify-between items-center pt-2 border-t border-slate-100 text-[11px] text-slate-500">
+            <span>Presets allow one-click entry when adding and pricing vehicle services.</span>
+            <button
+              type="button"
+              onClick={() => setIsPresetModalOpen(false)}
+              className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold cursor-pointer"
+            >
+              Done
+            </button>
+          </div>
+        </div>
       </Modal>
 
       {/* Manage Vehicle Categories Modal */}
@@ -599,7 +922,7 @@ export const ServicesPage: React.FC = () => {
               type="text"
               value={newCategoryInput}
               onChange={(e) => setNewCategoryInput(e.target.value)}
-              placeholder="Add new vehicle type (e.g. Three-Wheeler, SUV, Tractor)..."
+              placeholder="Add new vehicle type (e.g. Three-Wheeler, Tractor, SUV)..."
               className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-xs text-slate-900 focus:outline-none focus:border-blue-500"
             />
             <button
