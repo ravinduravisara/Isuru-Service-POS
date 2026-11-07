@@ -54,11 +54,15 @@ export async function getInventory(req: Request, res: Response, next: NextFuncti
       };
     });
 
+    // Compute total products in entire catalog (unfiltered)
+    const totalCatalogItems = await prisma.product.count();
+
     res.json({
       success: true,
       items: formatted,
       summary: {
-        totalItems: items.length,
+        totalItems: totalCatalogItems,
+        filteredCount: items.length,
         totalSellingValue: Math.round(totalSellingValue * 100) / 100,
         totalCostValue: Math.round(totalCostValue * 100) / 100,
         lowStockCount,
@@ -354,11 +358,13 @@ export async function deleteProduct(req: Request, res: Response, next: NextFunct
   }
 }
 
-function parseInventoryImportLine(line: string): { itemId: string; price: number } | null {
+function parseInventoryImportLine(
+  line: string
+): { itemId: string; price: number; lineBrand?: string; lineCategory?: string } | null {
   const trimmed = line.trim();
   if (!trimmed) return null;
 
-  // 1. Try comma-separated (e.g. "OF-1001, 1250.00" or "OF-1001, SAKURA, 1250.00")
+  // 1. Try comma-separated (e.g. "OF-1001, 1250.00" or "OF-1001, SAKURA, 1250.00" or "OF-1001, Oil Filter, SAKURA, 1250.00")
   if (trimmed.includes(',')) {
     const parts = trimmed
       .split(',')
@@ -369,7 +375,15 @@ function parseInventoryImportLine(line: string): { itemId: string; price: number
       const price = parseFloat(priceStr);
       const itemId = parts[0].trim().toUpperCase();
       if (itemId && !isNaN(price)) {
-        return { itemId, price };
+        let lineCategory: string | undefined;
+        let lineBrand: string | undefined;
+        if (parts.length === 3) {
+          lineBrand = parts[1].trim();
+        } else if (parts.length >= 4) {
+          lineCategory = parts[1].trim();
+          lineBrand = parts[2].trim();
+        }
+        return { itemId, price, lineBrand, lineCategory };
       }
     }
   }
@@ -385,7 +399,15 @@ function parseInventoryImportLine(line: string): { itemId: string; price: number
       const price = parseFloat(priceStr);
       const itemId = parts[0].trim().toUpperCase();
       if (itemId && !isNaN(price)) {
-        return { itemId, price };
+        let lineCategory: string | undefined;
+        let lineBrand: string | undefined;
+        if (parts.length === 3) {
+          lineBrand = parts[1].trim();
+        } else if (parts.length >= 4) {
+          lineCategory = parts[1].trim();
+          lineBrand = parts[2].trim();
+        }
+        return { itemId, price, lineBrand, lineCategory };
       }
     }
   }
@@ -465,44 +487,87 @@ export async function importCsv(req: Request, res: Response, next: NextFunction)
         continue;
       }
 
-      const existing = await prisma.product.findUnique({
-        where: { itemId: parsed.itemId },
-      });
+      const itemCategory = (parsed.lineCategory || category).trim();
+      const itemBrand = (parsed.lineBrand || brand).trim();
+      const targetItemId = parsed.itemId;
 
-      await prisma.product.upsert({
-        where: { itemId: parsed.itemId },
-        update: {
-          unitPrice: parsed.price > 0 ? parsed.price : undefined,
-          itemName: category.trim(),
-          brand: brand.trim() || undefined,
-        },
-        create: {
-          itemId: parsed.itemId,
-          itemName: category.trim(),
-          brand: brand.trim(),
-          quantity: 0,
-          unitPrice: parsed.price,
-          buyingPrice: 0,
-          paymentMethod: 'Cash',
-        },
+      const existing = await prisma.product.findUnique({
+        where: { itemId: targetItemId },
       });
 
       if (existing) {
-        updatedCount++;
+        // Check if existing belongs to same category and compatible brand
+        const sameCategory = existing.itemName.toLowerCase() === itemCategory.toLowerCase();
+        const sameBrand =
+          !existing.brand || !itemBrand || existing.brand.toLowerCase() === itemBrand.toLowerCase();
+
+        if (sameCategory && sameBrand) {
+          // Legitimate price / details update of the existing item
+          await prisma.product.update({
+            where: { id: existing.id },
+            data: {
+              unitPrice: parsed.price > 0 ? parsed.price : existing.unitPrice,
+              brand: itemBrand || existing.brand,
+            },
+          });
+          updatedCount++;
+        } else {
+          // Different category or different brand sharing the same item code!
+          // NEVER overwrite or replace the existing item. Create a disambiguated distinct item.
+          let disambiguatedId = `${itemBrand ? itemBrand.toUpperCase() + '-' : ''}${targetItemId}`;
+          const clashBrand = await prisma.product.findUnique({ where: { itemId: disambiguatedId } });
+          if (clashBrand) {
+            const catPrefix = itemCategory.replace(/[^A-Za-z0-9]/g, '').slice(0, 3).toUpperCase() || 'CAT';
+            disambiguatedId = `${catPrefix}-${disambiguatedId}`;
+          }
+
+          await prisma.product.upsert({
+            where: { itemId: disambiguatedId },
+            update: {
+              unitPrice: parsed.price > 0 ? parsed.price : undefined,
+              itemName: itemCategory,
+              brand: itemBrand,
+            },
+            create: {
+              itemId: disambiguatedId,
+              itemName: itemCategory,
+              brand: itemBrand,
+              quantity: 0,
+              unitPrice: parsed.price,
+              buyingPrice: 0,
+              paymentMethod: 'Cash',
+            },
+          });
+          importedCount++;
+        }
       } else {
+        await prisma.product.create({
+          data: {
+            itemId: targetItemId,
+            itemName: itemCategory,
+            brand: itemBrand,
+            quantity: 0,
+            unitPrice: parsed.price,
+            buyingPrice: 0,
+            paymentMethod: 'Cash',
+          },
+        });
         importedCount++;
       }
     }
 
     const totalProcessed = importedCount + updatedCount;
+    const totalCatalogCount = await prisma.product.count();
+
     let message = `Successfully processed ${totalProcessed} item${totalProcessed === 1 ? '' : 's'}`;
     if (updatedCount > 0 && importedCount > 0) {
-      message += ` (${importedCount} new, ${updatedCount} updated).`;
+      message += ` (${importedCount} new, ${updatedCount} updated prices).`;
     } else if (updatedCount > 0) {
-      message += ` (${updatedCount} updated).`;
+      message += ` (${updatedCount} updated prices).`;
     } else {
-      message += `.`;
+      message += ` newly added.`;
     }
+    message += ` Total store catalog items: ${totalCatalogCount}.`;
 
     if (skippedLines.length > 0) {
       message += ` (${skippedLines.length} unparseable line${skippedLines.length > 1 ? 's' : ''} skipped).`;
@@ -514,6 +579,7 @@ export async function importCsv(req: Request, res: Response, next: NextFunction)
       importedCount: totalProcessed,
       newCount: importedCount,
       updatedCount,
+      totalCatalogItems: totalCatalogCount,
       skippedCount: skippedLines.length,
     });
   } catch (error) {
