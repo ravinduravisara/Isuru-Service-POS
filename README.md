@@ -53,8 +53,8 @@ graph TD
 
 | Role | Default Username | Default Password | Permissions |
 |---|---|---|---|
-| **Administrator** | `Isuru@6800` | `Isuru@service` | Full system access, service rate catalog editing, financial profit statement, settings & credentials, data purge |
-| **Service Staff** | `User@123` | `User@service` | High-speed POS counter billing, view invoices, customer search, inventory lookup |
+| **Administrator**  Full system access, service rate catalog editing, financial profit statement, settings & credentials, data purge |
+| **Service Staff**  High-speed POS counter billing, view invoices, customer search, inventory lookup |
 
 *Note: Credentials can be updated at any time by the Administrator in **Settings > Security & Passwords**.*
 
