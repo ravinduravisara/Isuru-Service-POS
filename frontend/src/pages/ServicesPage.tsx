@@ -14,6 +14,7 @@ import {
   X,
   Car,
   Tag,
+  Bookmark,
 } from 'lucide-react';
 import { Modal } from '../components/ui/Modal';
 import { Badge } from '../components/ui/Badge';
@@ -97,6 +98,14 @@ export const ServicesPage: React.FC = () => {
   const [renamePresetInput, setRenamePresetInput] = useState('');
   const [presetError, setPresetError] = useState<string | null>(null);
 
+  // Service Tag Management Modal state
+  const [tags, setTags] = useState<string[]>(['Full Service', 'Body Wash', 'Custom Part']);
+  const [isTagModalOpen, setIsTagModalOpen] = useState(false);
+  const [newTagInput, setNewTagInput] = useState('');
+  const [editingTag, setEditingTag] = useState<string | null>(null);
+  const [renameTagInput, setRenameTagInput] = useState('');
+  const [tagError, setTagError] = useState<string | null>(null);
+
   // Form fields
   const [formCategory, setFormCategory] = useState<VehicleType>('Car');
   const [formName, setFormName] = useState('');
@@ -110,6 +119,7 @@ export const ServicesPage: React.FC = () => {
   useEffect(() => {
     fetchCategories();
     fetchPresets();
+    fetchTags();
   }, []);
 
   useEffect(() => {
@@ -135,6 +145,17 @@ export const ServicesPage: React.FC = () => {
       }
     } catch (err) {
       console.error('Failed to load service presets', err);
+    }
+  };
+
+  const fetchTags = async () => {
+    try {
+      const res = await api.get('/services/tags');
+      if (res.data?.tags && Array.isArray(res.data.tags)) {
+        setTags(res.data.tags);
+      }
+    } catch (err) {
+      console.error('Failed to load service tags', err);
     }
   };
 
@@ -384,6 +405,75 @@ export const ServicesPage: React.FC = () => {
     }
   };
 
+  const handleAddTag = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const clean = newTagInput.trim();
+    if (!clean) return;
+    setTagError(null);
+
+    try {
+      const res = await api.post('/services/tags', { name: clean });
+      if (res.data?.tags) {
+        setTags(res.data.tags);
+      } else {
+        await fetchTags();
+      }
+      setNewTagInput('');
+      setStatusMessage({ type: 'success', text: `Tag "${clean}" added successfully.` });
+    } catch (err: any) {
+      setTagError(err.response?.data?.error || 'Failed to add tag.');
+    }
+  };
+
+  const handleStartRenameTag = (name: string) => {
+    setEditingTag(name);
+    setRenameTagInput(name);
+    setTagError(null);
+  };
+
+  const handleSaveRenameTag = async (oldName: string) => {
+    const clean = renameTagInput.trim();
+    if (!clean || clean.toLowerCase() === oldName.toLowerCase()) {
+      setEditingTag(null);
+      return;
+    }
+    setTagError(null);
+
+    try {
+      const res = await api.put(`/services/tags/${encodeURIComponent(oldName)}`, { newName: clean });
+      if (res.data?.tags) {
+        setTags(res.data.tags);
+      } else {
+        await fetchTags();
+      }
+      if (formDescription === oldName) {
+        setFormDescription(clean);
+      }
+      await fetchServices();
+      setEditingTag(null);
+      setStatusMessage({ type: 'success', text: `Tag renamed to "${clean}".` });
+    } catch (err: any) {
+      setTagError(err.response?.data?.error || 'Failed to rename tag.');
+    }
+  };
+
+  const handleDeleteTag = async (name: string) => {
+    if (!window.confirm(`Are you sure you want to remove tag "${name}"?`)) return;
+    setTagError(null);
+
+    try {
+      const res = await api.delete(`/services/tags/${encodeURIComponent(name)}`);
+      if (res.data?.tags) {
+        setTags(res.data.tags);
+      } else {
+        await fetchTags();
+      }
+      setStatusMessage({ type: 'success', text: `Tag "${name}" removed.` });
+    } catch (err: any) {
+      setTagError(err.response?.data?.error || 'Failed to delete tag.');
+    }
+  };
+
   return (
     <div className="space-y-5">
       {/* Header */}
@@ -408,6 +498,19 @@ export const ServicesPage: React.FC = () => {
             >
               <Tag className="w-3.5 h-3.5 text-slate-500" />
               <span>Manage Presets</span>
+            </button>
+
+            <button
+              onClick={() => {
+                setTagError(null);
+                setEditingTag(null);
+                setIsTagModalOpen(true);
+              }}
+              className="flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold border border-slate-300 transition-colors cursor-pointer"
+              title="Add, edit or delete package & service tags"
+            >
+              <Bookmark className="w-3.5 h-3.5 text-slate-500" />
+              <span>Manage Tags</span>
             </button>
 
             <button
@@ -722,27 +825,44 @@ export const ServicesPage: React.FC = () => {
           </div>
 
           <div>
-            <div className="flex items-center justify-between mb-1">
+            <div className="flex items-center justify-between mb-1.5">
               <label className="block text-xs font-semibold text-slate-700">
                 Package / Tag / Notes
               </label>
-              <div className="flex items-center gap-1.5">
-                {['Full Service', 'Body Wash', 'Custom Part'].map((tag) => (
-                  <button
-                    key={tag}
-                    type="button"
-                    onClick={() => setFormDescription(tag)}
-                    className={`px-1.5 py-0.5 text-[10px] rounded border transition-colors cursor-pointer ${
-                      formDescription === tag
-                        ? 'bg-indigo-50 border-indigo-300 text-indigo-700 font-bold'
-                        : 'bg-slate-50 border-slate-200 text-slate-500 hover:bg-slate-100'
-                    }`}
-                  >
-                    {tag}
-                  </button>
-                ))}
-              </div>
+              {isAdmin() && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTagError(null);
+                    setEditingTag(null);
+                    setIsTagModalOpen(true);
+                  }}
+                  className="text-xs text-blue-600 hover:underline font-semibold cursor-pointer flex items-center gap-1"
+                >
+                  <Bookmark className="w-3 h-3" />
+                  <span>+ Manage Tags</span>
+                </button>
+              )}
             </div>
+
+            {/* Dynamic Tag Pills */}
+            <div className="flex flex-wrap items-center gap-1.5 mb-2">
+              {tags.map((tag) => (
+                <button
+                  key={tag}
+                  type="button"
+                  onClick={() => setFormDescription(tag)}
+                  className={`px-2 py-0.5 text-xs rounded border transition-colors cursor-pointer ${
+                    formDescription === tag
+                      ? 'bg-blue-600 border-blue-600 text-white font-bold shadow-2xs'
+                      : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100 hover:border-slate-300'
+                  }`}
+                >
+                  {tag}
+                </button>
+              ))}
+            </div>
+
             <textarea
               rows={2}
               value={formDescription}
@@ -887,6 +1007,131 @@ export const ServicesPage: React.FC = () => {
             <button
               type="button"
               onClick={() => setIsPresetModalOpen(false)}
+              className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold cursor-pointer"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Manage Package & Service Tags Modal */}
+      <Modal
+        isOpen={isTagModalOpen}
+        onClose={() => setIsTagModalOpen(false)}
+        title="Manage Package & Service Tags"
+        subtitle="Add, rename, or delete category tags (Full Service, Body Wash, Custom, etc.)"
+      >
+        <div className="space-y-5">
+          {tagError && (
+            <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 text-xs rounded-lg flex items-center justify-between">
+              <span>{tagError}</span>
+              <button
+                type="button"
+                onClick={() => setTagError(null)}
+                className="font-bold underline cursor-pointer"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {/* Add Tag Form */}
+          <form onSubmit={handleAddTag} className="flex gap-2">
+            <input
+              type="text"
+              value={newTagInput}
+              onChange={(e) => setNewTagInput(e.target.value)}
+              placeholder="Add new tag (e.g. Full Service, Body Wash, Engine Wash, Custom)..."
+              className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-xs text-slate-900 focus:outline-none focus:border-blue-500"
+            />
+            <button
+              type="submit"
+              disabled={!newTagInput.trim()}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Add Tag</span>
+            </button>
+          </form>
+
+          {/* Existing Tags List */}
+          <div className="border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-72 overflow-y-auto">
+            {tags.map((tag) => {
+              const isRenaming = editingTag === tag;
+
+              return (
+                <div
+                  key={tag}
+                  className="p-2.5 px-3 flex items-center justify-between gap-3 hover:bg-slate-50 transition-colors text-xs"
+                >
+                  {isRenaming ? (
+                    <div className="flex-1 flex items-center gap-2">
+                      <input
+                        type="text"
+                        autoFocus
+                        value={renameTagInput}
+                        onChange={(e) => setRenameTagInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleSaveRenameTag(tag);
+                          if (e.key === 'Escape') setEditingTag(null);
+                        }}
+                        className="flex-1 px-2.5 py-1.5 border border-blue-500 rounded text-xs text-slate-900 focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleSaveRenameTag(tag)}
+                        className="p-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded cursor-pointer"
+                        title="Save rename"
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingTag(null)}
+                        className="p-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded cursor-pointer"
+                        title="Cancel"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <Bookmark className="w-3 h-3 text-slate-400" />
+                        <span className="font-semibold text-slate-900">{tag}</span>
+                      </div>
+
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleStartRenameTag(tag)}
+                          className="p-1.5 text-slate-400 hover:text-slate-800 hover:bg-slate-100 rounded transition-colors cursor-pointer"
+                          title="Rename Tag"
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteTag(tag)}
+                          className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-colors cursor-pointer"
+                          title="Delete Tag"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="flex justify-between items-center pt-2 border-t border-slate-100 text-[11px] text-slate-500">
+            <span>Tags categorize services and can be attached to any service record.</span>
+            <button
+              type="button"
+              onClick={() => setIsTagModalOpen(false)}
               className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold cursor-pointer"
             >
               Done

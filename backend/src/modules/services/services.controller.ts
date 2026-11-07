@@ -374,3 +374,174 @@ export async function deleteServicePreset(req: Request, res: Response, next: Nex
     next(error);
   }
 }
+
+const DEFAULT_SERVICE_TAGS = ['Full Service', 'Body Wash', 'Custom Part'];
+
+export async function getServiceTags(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const setting = await prisma.setting.findUnique({
+      where: { key: 'service_tags' },
+    });
+
+    let tags: string[] = DEFAULT_SERVICE_TAGS;
+    if (setting?.value) {
+      try {
+        const parsed = JSON.parse(setting.value);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          tags = parsed;
+        }
+      } catch {
+        tags = [...DEFAULT_SERVICE_TAGS];
+      }
+    } else {
+      await prisma.setting.upsert({
+        where: { key: 'service_tags' },
+        update: {},
+        create: { key: 'service_tags', value: JSON.stringify(DEFAULT_SERVICE_TAGS) },
+      });
+    }
+
+    res.json({ success: true, tags });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function createServiceTag(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { name } = req.body;
+    if (!name || !name.trim()) {
+      res.status(400).json({ success: false, error: 'Tag name is required.' });
+      return;
+    }
+
+    const cleanName = name.trim();
+
+    const setting = await prisma.setting.findUnique({
+      where: { key: 'service_tags' },
+    });
+    let tags: string[] = DEFAULT_SERVICE_TAGS;
+    if (setting?.value) {
+      try {
+        tags = JSON.parse(setting.value);
+      } catch {
+        tags = [...DEFAULT_SERVICE_TAGS];
+      }
+    }
+
+    if (tags.some((t) => t.toLowerCase() === cleanName.toLowerCase())) {
+      res.status(409).json({ success: false, error: `Tag "${cleanName}" already exists.` });
+      return;
+    }
+
+    tags.push(cleanName);
+
+    await prisma.setting.upsert({
+      where: { key: 'service_tags' },
+      update: { value: JSON.stringify(tags) },
+      create: { key: 'service_tags', value: JSON.stringify(tags) },
+    });
+
+    res.status(201).json({
+      success: true,
+      message: `Tag "${cleanName}" added successfully.`,
+      tags,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function updateServiceTag(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const oldName = decodeURIComponent(req.params.name as string).trim();
+    const { newName } = req.body;
+
+    if (!newName || !newName.trim()) {
+      res.status(400).json({ success: false, error: 'New tag name is required.' });
+      return;
+    }
+
+    const cleanNewName = newName.trim();
+
+    const setting = await prisma.setting.findUnique({
+      where: { key: 'service_tags' },
+    });
+    let tags: string[] = DEFAULT_SERVICE_TAGS;
+    if (setting?.value) {
+      try {
+        tags = JSON.parse(setting.value);
+      } catch {
+        tags = [...DEFAULT_SERVICE_TAGS];
+      }
+    }
+
+    const index = tags.findIndex((t) => t.toLowerCase() === oldName.toLowerCase());
+    if (index === -1) {
+      res.status(404).json({ success: false, error: `Tag "${oldName}" not found.` });
+      return;
+    }
+
+    if (tags.some((t, idx) => idx !== index && t.toLowerCase() === cleanNewName.toLowerCase())) {
+      res.status(409).json({ success: false, error: `Tag "${cleanNewName}" already exists.` });
+      return;
+    }
+
+    tags[index] = cleanNewName;
+
+    // Transactionally update settings and existing service descriptions
+    await prisma.$transaction([
+      prisma.setting.upsert({
+        where: { key: 'service_tags' },
+        update: { value: JSON.stringify(tags) },
+        create: { key: 'service_tags', value: JSON.stringify(tags) },
+      }),
+      prisma.service.updateMany({
+        where: { description: { equals: oldName, mode: 'insensitive' } },
+        data: { description: cleanNewName },
+      }),
+    ]);
+
+    res.json({
+      success: true,
+      message: `Tag renamed from "${oldName}" to "${cleanNewName}".`,
+      tags,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function deleteServiceTag(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const name = decodeURIComponent(req.params.name as string).trim();
+
+    const setting = await prisma.setting.findUnique({
+      where: { key: 'service_tags' },
+    });
+    let tags: string[] = DEFAULT_SERVICE_TAGS;
+    if (setting?.value) {
+      try {
+        tags = JSON.parse(setting.value);
+      } catch {
+        tags = [...DEFAULT_SERVICE_TAGS];
+      }
+    }
+
+    tags = tags.filter((t) => t.toLowerCase() !== name.toLowerCase());
+
+    await prisma.setting.upsert({
+      where: { key: 'service_tags' },
+      update: { value: JSON.stringify(tags) },
+      create: { key: 'service_tags', value: JSON.stringify(tags) },
+    });
+
+    res.json({
+      success: true,
+      message: `Tag "${name}" removed successfully.`,
+      tags,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
