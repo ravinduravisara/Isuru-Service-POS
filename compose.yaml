@@ -30,7 +30,7 @@ services:
     environment:
       NODE_ENV: ${NODE_ENV:-development}
       PORT: 5050
-      DATABASE_URL: postgresql://${POSTGRES_USER:-isuru_pos_user}:${POSTGRES_PASSWORD:-isuru_dev_pass_2026}@postgres:5432/${POSTGRES_DB:-isuru_pos}?schema=public
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-isuru_pos_user}:${POSTGRES_PASSWORD:-isuru_dev_pass_2026}@postgres:5432/${POSTGRES_DB:-isuru_pos}?schema=public}
       JWT_SECRET: ${JWT_SECRET:-isuru_dev_secret_key_minimum_32_characters_for_jwt_security!}
       CLIENT_URL: http://localhost:${FRONTEND_PORT:-8081}
     ports:

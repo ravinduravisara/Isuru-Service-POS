@@ -83,9 +83,23 @@ export async function lookupByItemId(req: Request, res: Response, next: NextFunc
       return;
     }
 
-    const product = await prisma.product.findUnique({
+    let product = await prisma.product.findUnique({
       where: { itemId: cleanItemId },
     });
+
+    if (!product) {
+      // Match dual-code parts (e.g. "EO-24070 / LR004459" matching either code)
+      product = await prisma.product.findFirst({
+        where: {
+          OR: [
+            { itemId: { equals: cleanItemId, mode: 'insensitive' } },
+            { itemId: { startsWith: `${cleanItemId} /`, mode: 'insensitive' } },
+            { itemId: { endsWith: `/ ${cleanItemId}`, mode: 'insensitive' } },
+            { itemId: { contains: cleanItemId, mode: 'insensitive' } },
+          ],
+        },
+      });
+    }
 
     if (!product) {
       res.json({ success: false, found: false, message: 'Item not found in inventory' });
