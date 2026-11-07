@@ -107,12 +107,24 @@ export async function createInvoice(req: Request, res: Response, next: NextFunct
 
         if (itemId) {
           // Row lock product in PostgreSQL to serialize concurrent transactions and prevent race conditions
-          const lockedProducts: any[] = await tx.$queryRaw`
+          let lockedProducts: any[] = await tx.$queryRaw`
             SELECT id, "itemId", quantity, "buyingPrice", "supplierCode"
             FROM products
             WHERE "itemId" = ${itemId}
             FOR UPDATE
           `;
+
+          // If not found by exact match, check dual-code parts (e.g. "LR004459" matching "EO-24070 / LR004459")
+          if (lockedProducts.length === 0) {
+            lockedProducts = await tx.$queryRaw`
+              SELECT id, "itemId", quantity, "buyingPrice", "supplierCode"
+              FROM products
+              WHERE UPPER("itemId") LIKE ${'%' + itemId + '%'}
+              ORDER BY LENGTH("itemId") ASC
+              LIMIT 1
+              FOR UPDATE
+            `;
+          }
 
           if (lockedProducts.length > 0) {
             const product = lockedProducts[0];

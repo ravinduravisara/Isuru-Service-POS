@@ -240,6 +240,7 @@ export const BillingPage: React.FC = () => {
             const amount = Math.round(updated[index].qty * rate * 100) / 100;
             updated[index] = {
               ...updated[index],
+              itemId: prod.itemId,
               service: updated[index].service || prod.itemName,
               description: desc,
               rate,
