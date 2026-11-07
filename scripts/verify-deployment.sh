@@ -59,8 +59,8 @@ fi
 # 4. Database Persistence Check
 echo -e "\n[4/4] Verifying PostgreSQL Volume Mount..."
 if command -v docker >/dev/null 2>&1; then
-  if docker volume ls --format '{{.Name}}' | grep -q "postgres_data"; then
-    echo "✔ Persistent PostgreSQL Docker volume found: postgres_data"
+  if docker volume ls --format '{{.Name}}' | grep -qE "isuru_pos.*pgdata|postgres_data"; then
+    echo "✔ Persistent PostgreSQL Docker volume confirmed active."
   else
     echo "⚠ Notice: Inspect your compose configuration for persistent volume mapping."
   fi
