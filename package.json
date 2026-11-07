@@ -1,7 +1,7 @@
 {
-  "name": "isuru-service-center-mern",
+  "name": "isuru-service-center-pos",
   "version": "1.0.0",
-  "description": "ISURU Service Center Billing System - Production Ready MERN Stack Application",
+  "description": "ISURU Service Center Billing System - Production Ready POS System (PostgreSQL + React + Node.js)",
   "main": "backend/dist/server.js",
   "scripts": {
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
@@ -14,13 +14,13 @@
     "test": "npm run test:backend",
     "test:backend": "cd backend && npm test",
     "test:frontend": "cd frontend && npm run test",
-    "migrate": "cd migration && npm run migrate"
+    "migrate:mongo": "cd backend && npm run migrate:mongo"
   },
   "keywords": [
     "service-center",
     "billing",
-    "mern",
-    "mongodb",
+    "postgresql",
+    "prisma",
     "express",
     "react",
     "nodejs",
