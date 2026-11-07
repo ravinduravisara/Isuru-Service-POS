@@ -354,6 +354,72 @@ export async function deleteProduct(req: Request, res: Response, next: NextFunct
   }
 }
 
+function parseInventoryImportLine(line: string): { itemId: string; price: number } | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+
+  // 1. Try comma-separated (e.g. "OF-1001, 1250.00" or "OF-1001, SAKURA, 1250.00")
+  if (trimmed.includes(',')) {
+    const parts = trimmed
+      .split(',')
+      .map((p) => p.trim().replace(/^["']|["']$/g, ''))
+      .filter(Boolean);
+    if (parts.length >= 2) {
+      const priceStr = parts[parts.length - 1].replace(/[^0-9.]/g, '');
+      const price = parseFloat(priceStr);
+      const itemId = parts[0].trim().toUpperCase();
+      if (itemId && !isNaN(price)) {
+        return { itemId, price };
+      }
+    }
+  }
+
+  // 2. Try tab-separated (e.g. copied from Excel / Google Sheets)
+  if (trimmed.includes('\t')) {
+    const parts = trimmed
+      .split('\t')
+      .map((p) => p.trim().replace(/^["']|["']$/g, ''))
+      .filter(Boolean);
+    if (parts.length >= 2) {
+      const priceStr = parts[parts.length - 1].replace(/[^0-9.]/g, '');
+      const price = parseFloat(priceStr);
+      const itemId = parts[0].trim().toUpperCase();
+      if (itemId && !isNaN(price)) {
+        return { itemId, price };
+      }
+    }
+  }
+
+  // 3. Try semicolon-separated
+  if (trimmed.includes(';')) {
+    const parts = trimmed
+      .split(';')
+      .map((p) => p.trim().replace(/^["']|["']$/g, ''))
+      .filter(Boolean);
+    if (parts.length >= 2) {
+      const priceStr = parts[parts.length - 1].replace(/[^0-9.]/g, '');
+      const price = parseFloat(priceStr);
+      const itemId = parts[0].trim().toUpperCase();
+      if (itemId && !isNaN(price)) {
+        return { itemId, price };
+      }
+    }
+  }
+
+  // 4. Try whitespace-separated (where price is the last token on the line: e.g. "EO-24070 / LR004459 2380.00" or "C-7971  2100.00")
+  const spaceMatch = trimmed.match(/^(.*?)\s+([LKR|Rs\.]*\s*[0-9,]+(?:\.[0-9]+)?)\s*$/i);
+  if (spaceMatch) {
+    const itemPart = spaceMatch[1].trim().replace(/^["']|["']$/g, '');
+    const priceStr = spaceMatch[2].replace(/[^0-9.]/g, '');
+    const price = parseFloat(priceStr);
+    if (itemPart && !isNaN(price)) {
+      return { itemId: itemPart.toUpperCase(), price };
+    }
+  }
+
+  return null;
+}
+
 export async function importCsv(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const { category, brand = '', csvContent } = req.body;
@@ -376,46 +442,79 @@ export async function importCsv(req: Request, res: Response, next: NextFunction)
       return;
     }
 
-    let startIdx = 0;
-    if (
-      lines[0].toLowerCase().includes('part') ||
-      lines[0].toLowerCase().includes('item') ||
-      lines[0].toLowerCase().includes('oe')
-    ) {
-      startIdx = 1;
-    }
-
     let importedCount = 0;
+    let updatedCount = 0;
+    const skippedLines: string[] = [];
 
-    for (let i = startIdx; i < lines.length; i++) {
-      const parts = lines[i].split(',').map((p) => p.trim().replace(/^["']|["']$/g, ''));
-      if (parts.length < 2) continue;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const parsed = parseInventoryImportLine(line);
 
-      const itemId = parts[0].toUpperCase();
-      const priceStr = parts[1].replace(/[^0-9.]/g, '');
-      const price = parseFloat(priceStr) || 0;
+      if (!parsed) {
+        // If line 0 looks like a header, don't flag as skipped
+        if (
+          i === 0 &&
+          (line.toLowerCase().includes('item') ||
+            line.toLowerCase().includes('part') ||
+            line.toLowerCase().includes('code') ||
+            line.toLowerCase().includes('price'))
+        ) {
+          continue;
+        }
+        skippedLines.push(line);
+        continue;
+      }
 
-      if (!itemId) continue;
+      const existing = await prisma.product.findUnique({
+        where: { itemId: parsed.itemId },
+      });
 
       await prisma.product.upsert({
-        where: { itemId },
-        update: {},
+        where: { itemId: parsed.itemId },
+        update: {
+          unitPrice: parsed.price > 0 ? parsed.price : undefined,
+          itemName: category.trim(),
+          brand: brand.trim() || undefined,
+        },
         create: {
-          itemId,
+          itemId: parsed.itemId,
           itemName: category.trim(),
           brand: brand.trim(),
           quantity: 0,
-          unitPrice: price,
+          unitPrice: parsed.price,
           buyingPrice: 0,
+          paymentMethod: 'Cash',
         },
       });
-      importedCount++;
+
+      if (existing) {
+        updatedCount++;
+      } else {
+        importedCount++;
+      }
+    }
+
+    const totalProcessed = importedCount + updatedCount;
+    let message = `Successfully processed ${totalProcessed} item${totalProcessed === 1 ? '' : 's'}`;
+    if (updatedCount > 0 && importedCount > 0) {
+      message += ` (${importedCount} new, ${updatedCount} updated).`;
+    } else if (updatedCount > 0) {
+      message += ` (${updatedCount} updated).`;
+    } else {
+      message += `.`;
+    }
+
+    if (skippedLines.length > 0) {
+      message += ` (${skippedLines.length} unparseable line${skippedLines.length > 1 ? 's' : ''} skipped).`;
     }
 
     res.json({
       success: true,
-      message: `Successfully processed CSV and imported ${importedCount} items.`,
-      importedCount,
+      message,
+      importedCount: totalProcessed,
+      newCount: importedCount,
+      updatedCount,
+      skippedCount: skippedLines.length,
     });
   } catch (error) {
     next(error);

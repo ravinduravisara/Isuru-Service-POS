@@ -56,6 +56,46 @@ export const InventoryPage: React.FC = () => {
   const [csvBrand, setCsvBrand] = useState('');
   const [csvContent, setCsvContent] = useState('');
 
+  const previewItems = React.useMemo(() => {
+    if (!csvContent.trim()) return [];
+    const lines = csvContent.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const parsed: { item: string; price: number }[] = [];
+    for (const line of lines) {
+      if (line.includes(',')) {
+        const parts = line.split(',').map((p) => p.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+        if (parts.length >= 2) {
+          const price = parseFloat(parts[parts.length - 1].replace(/[^0-9.]/g, ''));
+          const item = parts[0].trim().toUpperCase();
+          if (item && !isNaN(price)) {
+            parsed.push({ item, price });
+            continue;
+          }
+        }
+      }
+      if (line.includes('\t')) {
+        const parts = line.split('\t').map((p) => p.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+        if (parts.length >= 2) {
+          const price = parseFloat(parts[parts.length - 1].replace(/[^0-9.]/g, ''));
+          const item = parts[0].trim().toUpperCase();
+          if (item && !isNaN(price)) {
+            parsed.push({ item, price });
+            continue;
+          }
+        }
+      }
+      const spaceMatch = line.match(/^(.*?)\s+([LKR|Rs\.]*\s*[0-9,]+(?:\.[0-9]+)?)\s*$/i);
+      if (spaceMatch) {
+        const item = spaceMatch[1].trim().replace(/^["']|["']$/g, '').toUpperCase();
+        const price = parseFloat(spaceMatch[2].replace(/[^0-9.]/g, ''));
+        if (item && !isNaN(price)) {
+          parsed.push({ item, price });
+          continue;
+        }
+      }
+    }
+    return parsed;
+  }, [csvContent]);
+
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(
     null
   );
@@ -605,7 +645,7 @@ export const InventoryPage: React.FC = () => {
         isOpen={isCsvModalOpen}
         onClose={() => setIsCsvModalOpen(false)}
         title="Batch Import Parts via CSV"
-        subtitle="Paste or upload CSV text with format: ItemCode, SellingPrice"
+        subtitle="Paste CSV, Excel table, or space/tab-separated data (e.g. ItemCode Price or ItemCode, Price)"
       >
         <form onSubmit={handleImportCsv} className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
@@ -630,7 +670,7 @@ export const InventoryPage: React.FC = () => {
                 type="text"
                 value={csvBrand}
                 onChange={(e) => setCsvBrand(e.target.value)}
-                placeholder="e.g. Bosch"
+                placeholder="e.g. SAKURA"
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs text-slate-900 focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -639,18 +679,48 @@ export const InventoryPage: React.FC = () => {
           <div>
             <div className="flex justify-between items-center mb-1">
               <label className="block text-xs font-semibold text-slate-700">
-                CSV Data (ItemCode, Price) *
+                Data (ItemCode, Price or ItemCode Price) *
               </label>
-              <span className="text-[10px] text-slate-400 font-mono">Example: OF-1001, 1250.00</span>
+              <span className="text-[10px] text-slate-400 font-mono">Accepts space, comma, or tab separated</span>
             </div>
             <textarea
               rows={6}
               required
               value={csvContent}
               onChange={(e) => setCsvContent(e.target.value)}
-              placeholder="OF-001, 850&#10;OF-002, 1200&#10;OF-003, 1450"
+              placeholder="EO-24070 / LR004459 2380.00&#10;C-38010 / JX0810D2  2970.00&#10;C-7971  2100.00&#10;OF-001, 1250.00"
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs font-mono text-slate-900 focus:outline-none focus:border-blue-500"
             />
+
+            {previewItems.length > 0 && (
+              <div className="mt-2.5 p-2.5 bg-emerald-50 border border-emerald-200 rounded-lg text-xs">
+                <span className="font-bold text-emerald-800">
+                  ✓ {previewItems.length} item{previewItems.length > 1 ? 's' : ''} detected ready to import:
+                </span>
+                <div className="mt-1.5 flex flex-wrap gap-1 max-h-24 overflow-y-auto">
+                  {previewItems.slice(0, 10).map((it, idx) => (
+                    <span
+                      key={idx}
+                      className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-white border border-emerald-200 rounded text-[10px] text-slate-700 font-mono shadow-2xs"
+                    >
+                      <span className="font-semibold text-slate-900">{it.item}</span>
+                      <span className="text-emerald-700 font-bold">LKR {it.price.toLocaleString('en-LK', { minimumFractionDigits: 2 })}</span>
+                    </span>
+                  ))}
+                  {previewItems.length > 10 && (
+                    <span className="text-[10px] text-slate-500 self-center font-medium pl-1">
+                      +{previewItems.length - 10} more...
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {csvContent.trim() && previewItems.length === 0 && (
+              <div className="mt-2 p-2 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
+                ⚠️ No items with valid prices detected. Make sure each line ends with a numeric price (e.g. <code>OF-1001 1250.00</code> or <code>OF-1001, 1250.00</code>).
+              </div>
+            )}
           </div>
 
           <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
@@ -663,9 +733,12 @@ export const InventoryPage: React.FC = () => {
             </button>
             <button
               type="submit"
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg shadow-xs cursor-pointer"
+              disabled={previewItems.length === 0}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold rounded-lg shadow-xs cursor-pointer"
             >
-              Start Batch Import
+              {previewItems.length > 0
+                ? `Start Batch Import (${previewItems.length} Items)`
+                : 'Start Batch Import'}
             </button>
           </div>
         </form>
