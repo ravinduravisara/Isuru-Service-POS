@@ -29,17 +29,20 @@ model Setting {
 }
 
 model Customer {
-  id        String    @id @default(uuid())
-  legacyId  Int?
-  name      String
-  phone     String    @default("")
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  vehicles  Vehicle[]
-  invoices  Invoice[]
+  id          String    @id @default(uuid())
+  legacyId    Int?
+  name        String
+  phone       String    @default("")
+  nic         String?   @default("")
+  bankDetails String?   @default("")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  vehicles    Vehicle[]
+  invoices    Invoice[]
 
   @@index([name])
   @@index([phone])
+  @@index([nic])
   @@map("customers")
 }
 

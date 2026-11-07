@@ -11,6 +11,8 @@ export async function getCustomers(req: Request, res: Response, next: NextFuncti
             OR: [
               { name: { contains: search, mode: 'insensitive' } },
               { phone: { contains: search, mode: 'insensitive' } },
+              { nic: { contains: search, mode: 'insensitive' } },
+              { bankDetails: { contains: search, mode: 'insensitive' } },
             ],
           }
         : undefined,
@@ -26,6 +28,8 @@ export async function getCustomers(req: Request, res: Response, next: NextFuncti
       id: c.id,
       name: c.name,
       phone: c.phone || '',
+      nic: c.nic || '',
+      bankDetails: c.bankDetails || '',
       vehiclesCount: c._count.vehicles,
       createdAt: c.createdAt,
     }));
@@ -52,6 +56,7 @@ export async function searchCustomers(req: Request, res: Response, next: NextFun
         OR: [
           { name: { contains: q, mode: 'insensitive' } },
           { phone: { contains: q, mode: 'insensitive' } },
+          { nic: { contains: q, mode: 'insensitive' } },
         ],
       },
       take: 10,
@@ -70,7 +75,9 @@ export async function searchCustomers(req: Request, res: Response, next: NextFun
     const result = customers.map((c) => ({
       id: c.id,
       name: c.name,
-      phone: c.phone,
+      phone: c.phone || '',
+      nic: c.nic || '',
+      bankDetails: c.bankDetails || '',
       vehicles: c.vehicles.map((v) => ({
         id: v.id,
         vehicleNo: v.vehicleNo,
@@ -109,7 +116,9 @@ export async function getCustomerById(req: Request, res: Response, next: NextFun
       customer: {
         id: customer.id,
         name: customer.name,
-        phone: customer.phone,
+        phone: customer.phone || '',
+        nic: customer.nic || '',
+        bankDetails: customer.bankDetails || '',
         createdAt: customer.createdAt,
       },
       vehicles: customer.vehicles,
@@ -145,16 +154,43 @@ export async function getCustomerVehicles(req: Request, res: Response, next: Nex
 
 export async function createCustomer(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { name, phone } = req.body;
+    const { name, phone, nic, bankDetails } = req.body;
     if (!name || !name.trim()) {
       res.status(400).json({ success: false, error: 'Customer name is required.' });
       return;
     }
 
+    const cleanPhone = (phone || '').trim();
+    if (cleanPhone && !/^\d{10}$/.test(cleanPhone)) {
+      res.status(400).json({
+        success: false,
+        error: 'Phone number must be exactly 10 digits (numbers only, e.g. 0771234567).',
+      });
+      return;
+    }
+
+    const cleanNic = (nic || '').trim().toUpperCase();
+    if (cleanNic) {
+      const isOldNic = /^[0-9]{9}[VX]$/.test(cleanNic);
+      const isNewNic = /^[0-9]{12}$/.test(cleanNic);
+      if (!isOldNic && !isNewNic) {
+        res.status(400).json({
+          success: false,
+          error:
+            'Customer ID No must be a valid Old ID (9 digits + V/X, e.g. 851234567V) or New ID (12 digits, e.g. 199812345678).',
+        });
+        return;
+      }
+    }
+
+    const cleanBankDetails = (bankDetails || '').trim();
+
     const customer = await prisma.customer.create({
       data: {
         name: name.trim(),
-        phone: (phone || '').trim(),
+        phone: cleanPhone,
+        nic: cleanNic,
+        bankDetails: cleanBankDetails,
       },
     });
 
@@ -165,6 +201,8 @@ export async function createCustomer(req: Request, res: Response, next: NextFunc
         id: customer.id,
         name: customer.name,
         phone: customer.phone,
+        nic: customer.nic,
+        bankDetails: customer.bankDetails,
       },
     });
   } catch (error) {
@@ -175,18 +213,45 @@ export async function createCustomer(req: Request, res: Response, next: NextFunc
 export async function updateCustomer(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const id = req.params.id as string;
-    const { name, phone } = req.body;
+    const { name, phone, nic, bankDetails } = req.body;
 
     if (!name || !name.trim()) {
       res.status(400).json({ success: false, error: 'Customer name is required.' });
       return;
     }
 
+    const cleanPhone = (phone || '').trim();
+    if (cleanPhone && !/^\d{10}$/.test(cleanPhone)) {
+      res.status(400).json({
+        success: false,
+        error: 'Phone number must be exactly 10 digits (numbers only, e.g. 0771234567).',
+      });
+      return;
+    }
+
+    const cleanNic = (nic || '').trim().toUpperCase();
+    if (cleanNic) {
+      const isOldNic = /^[0-9]{9}[VX]$/.test(cleanNic);
+      const isNewNic = /^[0-9]{12}$/.test(cleanNic);
+      if (!isOldNic && !isNewNic) {
+        res.status(400).json({
+          success: false,
+          error:
+            'Customer ID No must be a valid Old ID (9 digits + V/X, e.g. 851234567V) or New ID (12 digits, e.g. 199812345678).',
+        });
+        return;
+      }
+    }
+
+    const cleanBankDetails = (bankDetails || '').trim();
+
     const customer = await prisma.customer.update({
       where: { id },
       data: {
         name: name.trim(),
-        phone: (phone || '').trim(),
+        phone: cleanPhone,
+        nic: cleanNic,
+        bankDetails: cleanBankDetails,
       },
     });
 
@@ -197,6 +262,8 @@ export async function updateCustomer(req: Request, res: Response, next: NextFunc
         id: customer.id,
         name: customer.name,
         phone: customer.phone,
+        nic: customer.nic,
+        bankDetails: customer.bankDetails,
       },
     });
   } catch (error: any) {

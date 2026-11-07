@@ -14,6 +14,8 @@ export interface Customer {
   id: string;
   name: string;
   phone: string;
+  nic?: string;
+  bankDetails?: string;
   vehiclesCount?: number;
   createdAt: string;
 }

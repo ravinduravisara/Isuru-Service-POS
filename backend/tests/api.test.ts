@@ -111,13 +111,69 @@ describe('2. Role-Based Permissions & Guarding', () => {
 describe('3. Customers & Vehicles CRUD & Autocomplete', () => {
   let createdCustId = '';
 
+  it('POST /api/v1/customers should validate phone number (10 digits only) and ID No (Old & New ID)', async () => {
+    // 1. Rejects invalid phone (less than 10 digits)
+    const badPhoneRes = await request(app)
+      .post('/api/v1/customers')
+      .set('Authorization', `Bearer ${staffToken}`)
+      .send({ name: 'Bad Phone', phone: '07712345' });
+    expect(badPhoneRes.status).toBe(400);
+    expect(badPhoneRes.body.error).toContain('10 digits');
+
+    // 2. Rejects invalid NIC format
+    const badNicRes = await request(app)
+      .post('/api/v1/customers')
+      .set('Authorization', `Bearer ${staffToken}`)
+      .send({ name: 'Bad NIC', phone: '0771234567', nic: 'ABC123' });
+    expect(badNicRes.status).toBe(400);
+    expect(badNicRes.body.error).toContain('Customer ID No must be a valid Old ID');
+
+    // 3. Accepts valid Old ID (9 digits + V) and Bank Details
+    const oldIdRes = await request(app)
+      .post('/api/v1/customers')
+      .set('Authorization', `Bearer ${staffToken}`)
+      .send({
+        name: `Old ID Cust ${timestamp}`,
+        phone: '0771234567',
+        nic: '851234567V',
+        bankDetails: 'BOC - 7010234567',
+      });
+    expect(oldIdRes.status).toBe(201);
+    expect(oldIdRes.body.customer.nic).toBe('851234567V');
+    expect(oldIdRes.body.customer.bankDetails).toBe('BOC - 7010234567');
+
+    // 4. Accepts valid New ID (12 digits)
+    const newIdRes = await request(app)
+      .post('/api/v1/customers')
+      .set('Authorization', `Bearer ${staffToken}`)
+      .send({
+        name: `New ID Cust ${timestamp}`,
+        phone: '0719876543',
+        nic: '199812345678',
+        bankDetails: 'Commercial Bank - 88123456',
+      });
+    expect(newIdRes.status).toBe(201);
+    expect(newIdRes.body.customer.nic).toBe('199812345678');
+
+    // Clean up temporary test customer
+    await prisma.customer.deleteMany({
+      where: { id: { in: [oldIdRes.body.customer.id, newIdRes.body.customer.id] } },
+    });
+  });
+
   it('POST /api/v1/customers should register customer (Staff/Cashier allowed)', async () => {
     const res = await request(app)
       .post('/api/v1/customers')
       .set('Authorization', `Bearer ${staffToken}`)
-      .send({ name: `Audit Customer ${timestamp}`, phone: '0771234567' });
+      .send({
+        name: `Audit Customer ${timestamp}`,
+        phone: '0771234567',
+        nic: '923456789V',
+        bankDetails: 'People\'s Bank Colombo',
+      });
     expect(res.status).toBe(201);
     expect(res.body.customer.name).toContain('Audit Customer');
+    expect(res.body.customer.nic).toBe('923456789V');
     createdCustId = res.body.customer.id;
   });
 
