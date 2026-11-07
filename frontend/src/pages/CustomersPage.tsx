@@ -19,11 +19,12 @@ import { Modal } from '../components/ui/Modal';
 import { Badge } from '../components/ui/Badge';
 import { useAuthStore } from '../store/authStore';
 
-const VEHICLE_TYPES: VehicleType[] = ['Car', 'Bike', 'Van', 'Bus', 'Lorry', 'Others'];
+const DEFAULT_VEHICLE_TYPES: VehicleType[] = ['Car', 'Bike', 'Van', 'Bus', 'Lorry', 'Others'];
 
 export const CustomersPage: React.FC = () => {
   const { isAdmin } = useAuthStore();
 
+  const [vehicleTypes, setVehicleTypes] = useState<VehicleType[]>(DEFAULT_VEHICLE_TYPES);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [search, setSearch] = useState('');
   const [isLoading, setIsLoading] = useState(true);
@@ -50,8 +51,23 @@ export const CustomersPage: React.FC = () => {
   );
 
   useEffect(() => {
+    fetchVehicleTypes();
+  }, []);
+
+  useEffect(() => {
     fetchCustomers();
   }, [search]);
+
+  const fetchVehicleTypes = async () => {
+    try {
+      const res = await api.get('/vehicles/types');
+      if (res.data?.vehicleTypes && Array.isArray(res.data.vehicleTypes)) {
+        setVehicleTypes(res.data.vehicleTypes);
+      }
+    } catch {
+      // Keep defaults
+    }
+  };
 
   const fetchCustomers = async () => {
     setIsLoading(true);
@@ -422,7 +438,7 @@ export const CustomersPage: React.FC = () => {
                     onChange={(e) => setNewVehicleType(e.target.value as VehicleType)}
                     className="w-full px-2 py-1.5 border border-slate-300 rounded text-xs bg-white focus:outline-none focus:border-blue-500"
                   >
-                    {VEHICLE_TYPES.map((t) => (
+                    {vehicleTypes.map((t) => (
                       <option key={t} value={t}>
                         {t}
                       </option>

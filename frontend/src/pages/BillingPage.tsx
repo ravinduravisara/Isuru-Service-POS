@@ -25,10 +25,13 @@ interface BillingRow {
   amount: number;
 }
 
-const VEHICLE_TYPES: VehicleType[] = ['Car', 'Bike', 'Van', 'Bus', 'Lorry', 'Others'];
+const DEFAULT_VEHICLE_TYPES: VehicleType[] = ['Car', 'Bike', 'Van', 'Bus', 'Lorry', 'Others'];
 const PAYMENT_METHODS: PaymentMethod[] = ['Cash', 'Credit', 'Card', 'Cheque'];
 
 export const BillingPage: React.FC = () => {
+  // Vehicle Types
+  const [vehicleTypes, setVehicleTypes] = useState<VehicleType[]>(DEFAULT_VEHICLE_TYPES);
+
   // Customer & Vehicle State
   const [customerSearchQuery, setCustomerSearchQuery] = useState('');
   const [customerSearchResults, setCustomerSearchResults] = useState<Customer[]>([]);
@@ -72,10 +75,22 @@ export const BillingPage: React.FC = () => {
     phone: '+94 77 123 4567',
   });
 
-  // Load business profile and services
+  // Load business profile, vehicle types, and services
   useEffect(() => {
     fetchBusinessProfile();
+    fetchVehicleTypes();
   }, []);
+
+  const fetchVehicleTypes = async () => {
+    try {
+      const res = await api.get('/vehicles/types');
+      if (res.data?.vehicleTypes && Array.isArray(res.data.vehicleTypes)) {
+        setVehicleTypes(res.data.vehicleTypes);
+      }
+    } catch {
+      // Keep defaults
+    }
+  };
 
   useEffect(() => {
     fetchServicesForCategory(vehicleType);
@@ -469,7 +484,7 @@ export const BillingPage: React.FC = () => {
               onChange={(e) => setVehicleType(e.target.value as VehicleType)}
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white"
             >
-              {VEHICLE_TYPES.map((t) => (
+              {vehicleTypes.map((t) => (
                 <option key={t} value={t}>
                   {t}
                 </option>

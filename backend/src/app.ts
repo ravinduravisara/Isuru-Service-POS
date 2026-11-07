@@ -86,6 +86,7 @@ app.use('/api/v1/auth', authRouter);
 app.use('/api/v1/dashboard', dashboardRouter);
 app.use('/api/v1/customers', customersRouter);
 app.use('/api/v1/vehicles', vehiclesRouter);
+app.use('/api/v1/vehicle-types', vehiclesRouter);
 app.use('/api/v1/services', servicesRouter);
 app.use('/api/v1/inventory', inventoryRouter);
 app.use('/api/v1/suppliers', suppliersRouter);

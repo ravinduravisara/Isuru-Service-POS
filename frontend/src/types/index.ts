@@ -1,5 +1,5 @@
 export type UserRole = 'Admin' | 'User';
-export type VehicleType = 'Car' | 'Bike' | 'Van' | 'Bus' | 'Lorry' | 'Others';
+export type VehicleType = string;
 export type PaymentMethod = 'Cash' | 'Credit' | 'Cheque' | 'Card';
 export type PaymentStatus = 'Paid' | 'Pending' | 'unpaid' | 'paid' | 'pending';
 

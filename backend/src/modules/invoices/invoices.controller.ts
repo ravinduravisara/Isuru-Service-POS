@@ -268,7 +268,11 @@ export async function createInvoice(req: Request, res: Response, next: NextFunct
       },
     });
   } catch (error: any) {
-    if (error.message?.includes('Please add at least one valid invoice row')) {
+    if (
+      error.message?.includes('Please add at least one valid invoice row') ||
+      error.message?.includes('Insufficient stock') ||
+      error.message?.includes('Concurrent transaction conflict')
+    ) {
       res.status(400).json({ success: false, error: error.message });
       return;
     }

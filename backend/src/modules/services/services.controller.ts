@@ -24,28 +24,19 @@ export async function getServices(req: Request, res: Response, next: NextFunctio
     const where: any = {};
 
     if (category && category !== 'All') {
-      if (category.toLowerCase() !== 'others') {
-        where.OR = [
-          { category: { equals: category, mode: 'insensitive' } },
-          { category: 'Others' },
-        ];
-      } else {
-        where.category = 'Others';
-      }
+      where.category = { equals: category, mode: 'insensitive' };
     }
 
     if (search) {
-      const searchCondition = {
-        OR: [
-          { name: { contains: search, mode: 'insensitive' } },
-          { description: { contains: search, mode: 'insensitive' } },
-        ],
-      };
-      if (where.OR) {
-        where.AND = [searchCondition];
-      } else {
-        where.OR = searchCondition.OR;
-      }
+      where.AND = [
+        ...(where.AND || []),
+        {
+          OR: [
+            { name: { contains: search, mode: 'insensitive' } },
+            { description: { contains: search, mode: 'insensitive' } },
+          ],
+        },
+      ];
     }
 
     const services = await prisma.service.findMany({
