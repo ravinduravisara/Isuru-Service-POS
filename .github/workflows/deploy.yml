@@ -1,11 +1,12 @@
 name: Production Deployment to Hostinger VPS
 
 on:
-  push:
-    branches: [ deployment ]
-    tags: [ 'v*.*.*' ]
   workflow_dispatch:
     inputs:
+      confirm_deploy:
+        description: 'Type "DEPLOY" to confirm authorized production deployment'
+        required: true
+        default: 'NO'
       manual_rollback:
         description: 'Set to true to roll back to the previously recorded release commit'
         required: false
@@ -37,6 +38,13 @@ jobs:
           --health-retries 5
 
     steps:
+      - name: Verify Authorization Confirmation
+        run: |
+          if [ "${{ github.event.inputs.confirm_deploy }}" != "DEPLOY" ]; then
+            echo "Deployment aborted: Confirmation string 'DEPLOY' was not supplied."
+            exit 1
+          fi
+
       - name: Checkout Deployment Code
         uses: actions/checkout@v4
 
@@ -48,9 +56,9 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          npm ci || npm install
-          cd backend && npm ci || npm install
-          cd ../frontend && npm ci || npm install
+          npm ci
+          cd backend && npm ci
+          cd ../frontend && npm ci
 
       - name: Validate TypeScript & Generate Prisma
         env:
@@ -103,8 +111,10 @@ jobs:
           echo "Commit SHA: ${RELEASE_REF}"
           echo "================================================================="
 
-          # SSH with strict host key checking disabled for automated pipeline
-          ssh -o StrictHostKeyChecking=no -p "${VPS_PORT}" "${VPS_USER}@${VPS_HOST}" bash -s << 'EOF'
+          mkdir -p ~/.ssh
+          ssh-keyscan -p "${VPS_PORT}" "${VPS_HOST}" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+          ssh -o StrictHostKeyChecking=accept-new -p "${VPS_PORT}" "${VPS_USER}@${VPS_HOST}" bash -s << 'EOF'
             set -euo pipefail
             APP_DIR="/opt/isuru-pos"
 
@@ -133,8 +143,8 @@ jobs:
             docker compose -f compose.prod.yaml build
 
             echo "-> [5/6] Applying Prisma migrations & restarting services gracefully..."
-            # Launch database first to ensure healthcheck passes before backend
-            docker compose -f compose.prod.yaml up -d postgres
+            # Run migrations directly against Neon using backend environment
+            docker compose -f compose.prod.yaml run --rm backend npx prisma migrate deploy
             docker compose -f compose.prod.yaml up -d --remove-orphans
 
             echo "-> [6/6] Verifying deployment health checks..."
