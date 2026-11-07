@@ -495,9 +495,20 @@ export const ServicesPage: React.FC = () => {
               placeholder="e.g. FullService, Body Wash, Custom"
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:border-blue-500"
             />
-            <div className="flex items-center gap-1.5 mt-2">
+            <div className="flex flex-wrap items-center gap-1.5 mt-2">
               <span className="text-[11px] text-slate-400">Presets:</span>
-              {['FullService', 'Body Wash', 'Custom'].map((preset) => (
+              {[
+                'Service Charge',
+                'Engine Wash',
+                'Engine Chemical',
+                'Grease',
+                'Penetrating Oil',
+                'Diesel',
+                'Kerosene',
+                'High Pressure',
+                'Chemical',
+                'Body Wash',
+              ].map((preset) => (
                 <button
                   key={preset}
                   type="button"

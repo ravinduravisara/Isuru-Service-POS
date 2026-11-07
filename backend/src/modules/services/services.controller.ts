@@ -22,9 +22,17 @@ export async function getServices(req: Request, res: Response, next: NextFunctio
     }
 
     const where: any = {};
+    const includeCustom = req.query.includeCustom === 'true';
 
     if (category && category !== 'All') {
-      where.category = { equals: category, mode: 'insensitive' };
+      if (includeCustom && category.toLowerCase() !== 'custom') {
+        where.OR = [
+          { category: { equals: category, mode: 'insensitive' } },
+          { category: 'Custom' },
+        ];
+      } else {
+        where.category = { equals: category, mode: 'insensitive' };
+      }
     }
 
     if (search) {

@@ -113,11 +113,30 @@ export const BillingPage: React.FC = () => {
 
   const fetchServicesForCategory = async (cat: VehicleType) => {
     try {
-      const res = await api.get(`/services?category=${cat}`);
+      const res = await api.get(`/services?category=${encodeURIComponent(cat)}&includeCustom=true`);
       setAvailableServices(res.data.services || []);
     } catch (err) {
       console.error('Failed to load services for category:', cat, err);
     }
+  };
+
+  const handleAddFullServicePackage = () => {
+    const pkgItems = availableServices.filter(
+      (s) => s.category.toLowerCase() === vehicleType.toLowerCase() && s.description === 'Full Service'
+    );
+    if (pkgItems.length === 0) return;
+
+    const existing = rows.filter((r) => r.service.trim() || r.itemId.trim() || r.rate > 0);
+    const newRows: BillingRow[] = pkgItems.map((item) => ({
+      service: item.name,
+      itemId: '',
+      description: item.description || 'Full Service',
+      qty: 1,
+      rate: item.price,
+      amount: item.price,
+    }));
+
+    setRows([...existing, ...newRows]);
   };
 
   // Customer search handler
@@ -541,14 +560,29 @@ export const BillingPage: React.FC = () => {
               ({rows.length} {rows.length === 1 ? 'row' : 'rows'})
             </span>
           </div>
-          <button
-            type="button"
-            onClick={handleAddRow}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold shadow-xs transition-colors cursor-pointer"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Add Row (F2)</span>
-          </button>
+          <div className="flex items-center gap-2">
+            {availableServices.some(
+              (s) => s.category.toLowerCase() === vehicleType.toLowerCase() && s.description === 'Full Service'
+            ) && (
+              <button
+                type="button"
+                onClick={handleAddFullServicePackage}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                title="Add all full service items for this vehicle in 1 click"
+              >
+                <CheckCircle className="w-3.5 h-3.5" />
+                <span>+ Load Full Service Package</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={handleAddRow}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold shadow-xs transition-colors cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Add Row (F2)</span>
+            </button>
+          </div>
         </div>
 
         <div className="overflow-x-auto">
@@ -578,12 +612,25 @@ export const BillingPage: React.FC = () => {
                       className="w-full px-2.5 py-1.5 border border-slate-300 rounded text-xs text-slate-900 bg-white focus:outline-none focus:border-blue-500"
                     >
                       <option value="">-- Select Service --</option>
-                      {availableServices.map((s) => (
-                        <option key={s.id} value={s.name}>
-                          {s.name} (LKR {s.price})
-                        </option>
-                      ))}
-                      <option value="Custom Service / Part">Custom Service / Part</option>
+                      <optgroup label={`${vehicleType} Specific Rates`}>
+                        {availableServices
+                          .filter((s) => s.category.toLowerCase() === vehicleType.toLowerCase())
+                          .map((s) => (
+                            <option key={s.id} value={s.name}>
+                              {s.name} {s.description ? `(${s.description})` : ''} - LKR {s.price.toLocaleString('en-LK', { minimumFractionDigits: 2 })}
+                            </option>
+                          ))}
+                      </optgroup>
+                      <optgroup label="Custom & Common Services">
+                        {availableServices
+                          .filter((s) => s.category.toLowerCase() === 'custom')
+                          .map((s) => (
+                            <option key={s.id} value={s.name}>
+                              {s.name} (Custom)
+                            </option>
+                          ))}
+                        <option value="Custom Service / Part">Other Custom Item</option>
+                      </optgroup>
                     </select>
                   </td>
 
