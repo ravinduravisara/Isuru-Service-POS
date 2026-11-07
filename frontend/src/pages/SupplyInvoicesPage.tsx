@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { api } from '../services/api';
 import { SupplyInvoice, Supplier, Product } from '../types';
 import {
@@ -34,6 +34,7 @@ export const SupplyInvoicesPage: React.FC = () => {
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [suppliersList, setSuppliersList] = useState<Supplier[]>([]);
+  const [isCustomSupplier, setIsCustomSupplier] = useState(false);
 
   // Form Fields
   const [formInvoiceNo, setFormInvoiceNo] = useState('');
@@ -55,7 +56,17 @@ export const SupplyInvoicesPage: React.FC = () => {
 
   useEffect(() => {
     fetchSupplyInvoices();
+    fetchSuppliers();
   }, [search, paymentStatus]);
+
+  const fetchSuppliers = async () => {
+    try {
+      const res = await api.get('/suppliers');
+      setSuppliersList(res.data.suppliers || []);
+    } catch (err) {
+      console.error('Failed to load suppliers list', err);
+    }
+  };
 
   const fetchSupplyInvoices = async () => {
     setIsLoading(true);
@@ -79,6 +90,7 @@ export const SupplyInvoicesPage: React.FC = () => {
   const handleOpenCreate = async () => {
     setFormInvoiceNo('');
     setFormSupplierCode('');
+    setIsCustomSupplier(false);
     setFormItemId('');
     setFormBuyingPrice(0);
     setFormQuantity(1);
@@ -88,16 +100,10 @@ export const SupplyInvoicesPage: React.FC = () => {
     setFormBranchCode('');
     setFormValueDate('');
     setIsModalOpen(true);
-
-    try {
-      const res = await api.get('/suppliers');
-      setSuppliersList(res.data.suppliers || []);
-    } catch {
-      // Ignore
-    }
+    fetchSuppliers();
   };
 
-  // Auto-fill buying price if item found
+  // Auto-fill buying price and supplier code if item found
   const handleItemIdBlur = async () => {
     if (!formItemId.trim()) return;
     try {
@@ -105,13 +111,89 @@ export const SupplyInvoicesPage: React.FC = () => {
       if (res.data?.product) {
         setFormBuyingPrice(res.data.product.buyingPrice || 0);
         if (res.data.product.supplierCode && !formSupplierCode) {
-          setFormSupplierCode(res.data.product.supplierCode);
+          const matchedCode = res.data.product.supplierCode.toUpperCase();
+          setFormSupplierCode(matchedCode);
+          if (!suppliersList.some((s) => s.supplierCode.toUpperCase() === matchedCode)) {
+            setIsCustomSupplier(true);
+          }
         }
       }
     } catch {
       // Ignore
     }
   };
+
+  // Active supplier object matching currently selected/typed supplier code
+  const selectedSupplier = useMemo(() => {
+    if (!formSupplierCode.trim()) return null;
+    return (
+      suppliersList.find(
+        (s) => s.supplierCode.toUpperCase() === formSupplierCode.trim().toUpperCase()
+      ) || null
+    );
+  }, [suppliersList, formSupplierCode]);
+
+  // Invoice suggestions derived from supplier table memo/invoices and past purchases
+  const invoiceSuggestions = useMemo(() => {
+    const list: { code: string; label: string; supplierCode?: string }[] = [];
+    const seen = new Set<string>();
+
+    const addSuggestion = (code: string, label: string, supCode?: string) => {
+      const clean = code.trim();
+      if (!clean) return;
+      const key = clean.toUpperCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      list.push({ code: clean, label, supplierCode: supCode });
+    };
+
+    if (selectedSupplier) {
+      // 1. From Supplier Table "invoice" (Memo / Invoices) field
+      if (selectedSupplier.invoice && selectedSupplier.invoice.trim()) {
+        const raw = selectedSupplier.invoice.trim();
+        const parts = raw
+          .split(/[,;\n|/]+/)
+          .map((p) => p.trim())
+          .filter(Boolean);
+
+        parts.forEach((p) => {
+          addSuggestion(p, `${selectedSupplier.name} (Supplier Memo)`, selectedSupplier.supplierCode);
+        });
+
+        if (!seen.has(raw.toUpperCase()) && raw.length <= 40) {
+          addSuggestion(raw, `${selectedSupplier.name} (Supplier Memo)`, selectedSupplier.supplierCode);
+        }
+      }
+
+      // 2. From historical supply invoices for this supplier
+      invoices
+        .filter((inv) => inv.supplierCode.toUpperCase() === selectedSupplier.supplierCode.toUpperCase())
+        .forEach((inv) => {
+          addSuggestion(inv.invoiceNo, `${selectedSupplier.name} (Past Purchase)`, selectedSupplier.supplierCode);
+        });
+    } else {
+      // If no supplier is chosen yet, suggest from all suppliers' memo/invoices in the supplier table
+      suppliersList.forEach((s) => {
+        if (s.invoice && s.invoice.trim()) {
+          const parts = s.invoice
+            .split(/[,;\n|/]+/)
+            .map((p) => p.trim())
+            .filter(Boolean);
+
+          parts.forEach((p) => {
+            addSuggestion(p, `${s.supplierCode} — ${s.name} (Supplier Memo)`, s.supplierCode);
+          });
+        }
+      });
+
+      // Also include recent supply invoices
+      invoices.slice(0, 10).forEach((inv) => {
+        addSuggestion(inv.invoiceNo, `${inv.supplierCode} (Past Purchase)`, inv.supplierCode);
+      });
+    }
+
+    return list;
+  }, [selectedSupplier, suppliersList, invoices, formSupplierCode]);
 
   const handleSaveSupplyInvoice = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -383,45 +465,171 @@ export const SupplyInvoicesPage: React.FC = () => {
       >
         <form onSubmit={handleSaveSupplyInvoice} className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+            {/* Supplier Code Field with Dropdown */}
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Vendor Invoice No *
-              </label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-xs font-semibold text-slate-700">
+                  Supplier Code *
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setIsCustomSupplier((prev) => !prev)}
+                  className="text-[11px] text-blue-600 hover:text-blue-800 font-medium cursor-pointer"
+                >
+                  {isCustomSupplier ? 'Select from list' : '+ Type custom code'}
+                </button>
+              </div>
+
+              {!isCustomSupplier ? (
+                <select
+                  required
+                  value={formSupplierCode}
+                  onChange={(e) => setFormSupplierCode(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs font-semibold text-slate-900 bg-white focus:outline-none focus:border-blue-500"
+                >
+                  <option value="">
+                    {suppliersList.length > 0
+                      ? `-- Select Supplier (${suppliersList.length} registered) --`
+                      : '-- No registered suppliers found --'}
+                  </option>
+                  {suppliersList.map((s) => (
+                    <option key={s.id} value={s.supplierCode}>
+                      {s.supplierCode} — {s.name} {s.contact ? `(${s.contact})` : ''}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  required
+                  value={formSupplierCode}
+                  onChange={(e) => setFormSupplierCode(e.target.value.toUpperCase())}
+                  placeholder="e.g. SUP-0001"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs font-mono uppercase bg-white focus:outline-none focus:border-blue-500"
+                />
+              )}
+
+              {selectedSupplier ? (
+                <div className="mt-1 flex items-center justify-between text-[11px] text-slate-500">
+                  <span className="font-medium text-slate-700 truncate">
+                    {selectedSupplier.name}
+                  </span>
+                  {selectedSupplier.contact && (
+                    <span className="text-slate-400 font-mono shrink-0 ml-2">
+                      📞 {selectedSupplier.contact}
+                    </span>
+                  )}
+                </div>
+              ) : (
+                suppliersList.length > 0 && !isCustomSupplier && (
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {suppliersList.slice(0, 3).map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => setFormSupplierCode(s.supplierCode)}
+                        className="text-[10px] px-1.5 py-0.5 bg-slate-100 hover:bg-slate-200 rounded text-slate-600 font-mono cursor-pointer"
+                      >
+                        {s.supplierCode} ({s.name})
+                      </button>
+                    ))}
+                  </div>
+                )
+              )}
+            </div>
+
+            {/* Vendor Invoice No Field with Dropdown Suggestions from Supplier Table */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-xs font-semibold text-slate-700">
+                  Vendor Invoice No *
+                </label>
+                {invoiceSuggestions.length > 0 && (
+                  <span className="text-[10px] text-blue-600 font-medium">
+                    {invoiceSuggestions.length} suggestion{invoiceSuggestions.length > 1 ? 's' : ''}
+                  </span>
+                )}
+              </div>
+
               <input
                 type="text"
                 required
+                list="vendor-invoice-datalist"
                 value={formInvoiceNo}
                 onChange={(e) => setFormInvoiceNo(e.target.value)}
                 placeholder="e.g. UML-INV-9821"
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs font-mono uppercase bg-white focus:outline-none focus:border-blue-500"
               />
-            </div>
 
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Supplier Code *
-              </label>
-              <input
-                type="text"
-                required
-                value={formSupplierCode}
-                onChange={(e) => setFormSupplierCode(e.target.value.toUpperCase())}
-                placeholder="e.g. SUP-0001"
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs font-mono uppercase bg-white focus:outline-none focus:border-blue-500"
-              />
-              {suppliersList.length > 0 && (
-                <div className="flex flex-wrap gap-1 mt-1">
-                  {suppliersList.slice(0, 3).map((s) => (
-                    <button
-                      key={s.id}
-                      type="button"
-                      onClick={() => setFormSupplierCode(s.supplierCode)}
-                      className="text-[10px] px-1 py-0.5 bg-slate-100 rounded text-slate-600 font-mono"
-                    >
-                      {s.supplierCode} ({s.name})
-                    </button>
-                  ))}
+              <datalist id="vendor-invoice-datalist">
+                {invoiceSuggestions.map((item, idx) => (
+                  <option key={idx} value={item.code} label={item.label} />
+                ))}
+              </datalist>
+
+              {/* Dropdown for suggested invoice memos from supplier table */}
+              {invoiceSuggestions.length > 0 ? (
+                <div className="mt-1.5 space-y-1">
+                  <select
+                    value={
+                      invoiceSuggestions.some(
+                        (item) => item.code.toUpperCase() === formInvoiceNo.trim().toUpperCase()
+                      )
+                        ? formInvoiceNo.trim().toUpperCase()
+                        : ''
+                    }
+                    onChange={(e) => {
+                      if (e.target.value) {
+                        const chosen = invoiceSuggestions.find(
+                          (item) => item.code.toUpperCase() === e.target.value.toUpperCase()
+                        );
+                        setFormInvoiceNo(chosen ? chosen.code : e.target.value);
+                        if (chosen && chosen.supplierCode && !formSupplierCode) {
+                          setFormSupplierCode(chosen.supplierCode);
+                        }
+                      }
+                    }}
+                    className="w-full px-2.5 py-1.5 border border-blue-200 bg-blue-50/70 rounded-lg text-xs font-mono text-blue-900 focus:outline-none focus:border-blue-500 cursor-pointer"
+                  >
+                    <option value="">
+                      -- Pick from Supplier Memo / Invoices ({invoiceSuggestions.length}) --
+                    </option>
+                    {invoiceSuggestions.map((item, idx) => (
+                      <option key={idx} value={item.code}>
+                        {item.code} — {item.label}
+                      </option>
+                    ))}
+                  </select>
+
+                  {/* Quick-click suggestion chips */}
+                  <div className="flex flex-wrap gap-1">
+                    {invoiceSuggestions.slice(0, 4).map((item, idx) => (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => {
+                          setFormInvoiceNo(item.code);
+                          if (item.supplierCode && !formSupplierCode) {
+                            setFormSupplierCode(item.supplierCode);
+                          }
+                        }}
+                        className={`text-[10px] px-2 py-0.5 rounded font-mono transition-colors cursor-pointer border ${
+                          formInvoiceNo.trim().toUpperCase() === item.code.toUpperCase()
+                            ? 'bg-blue-600 text-white border-blue-600 font-bold shadow-xs'
+                            : 'bg-white hover:bg-blue-50 text-slate-700 border-slate-200'
+                        }`}
+                      >
+                        {item.code}
+                      </button>
+                    ))}
+                  </div>
                 </div>
+              ) : (
+                <p className="text-[10px] text-slate-400 mt-1">
+                  {formSupplierCode
+                    ? 'No memo/invoices found in supplier profile. You can type any new invoice number above.'
+                    : 'Select a supplier to load their memo/invoice suggestions.'}
+                </p>
               )}
             </div>
           </div>

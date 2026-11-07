@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/api';
-import { Product } from '../types';
+import { Product, Supplier } from '../types';
 import {
   Boxes,
   Search,
@@ -24,6 +24,7 @@ export const InventoryPage: React.FC = () => {
 
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
+  const [suppliersList, setSuppliersList] = useState<Supplier[]>([]);
   const [summary, setSummary] = useState({
     totalItems: 0,
     totalSellingValue: 0,
@@ -62,7 +63,17 @@ export const InventoryPage: React.FC = () => {
   useEffect(() => {
     fetchInventory();
     fetchCategories();
+    fetchSuppliers();
   }, [search, selectedCategory]);
+
+  const fetchSuppliers = async () => {
+    try {
+      const res = await api.get('/suppliers');
+      setSuppliersList(res.data.suppliers || []);
+    } catch {
+      // Ignore
+    }
+  };
 
   const fetchInventory = async () => {
     setIsLoading(true);
@@ -522,16 +533,53 @@ export const InventoryPage: React.FC = () => {
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Supplier Code (Optional)
-            </label>
-            <input
-              type="text"
-              value={formSupplierCode}
-              onChange={(e) => setFormSupplierCode(e.target.value.toUpperCase())}
-              placeholder="e.g. SUP-0001"
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs font-mono uppercase bg-white focus:outline-none focus:border-blue-500"
-            />
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-xs font-semibold text-slate-700">
+                Supplier Code (Optional)
+              </label>
+              {suppliersList.length > 0 && (
+                <span className="text-[11px] text-slate-400">
+                  {suppliersList.length} registered
+                </span>
+              )}
+            </div>
+            <div className="flex flex-col sm:flex-row gap-2">
+              <input
+                type="text"
+                list="inventory-suppliers-list"
+                value={formSupplierCode}
+                onChange={(e) => setFormSupplierCode(e.target.value.toUpperCase())}
+                placeholder="e.g. SUP-0001"
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs font-mono uppercase bg-white focus:outline-none focus:border-blue-500"
+              />
+              {suppliersList.length > 0 && (
+                <select
+                  value={
+                    suppliersList.some(
+                      (s) => s.supplierCode.toUpperCase() === formSupplierCode.trim().toUpperCase()
+                    )
+                      ? formSupplierCode.trim().toUpperCase()
+                      : ''
+                  }
+                  onChange={(e) => {
+                    if (e.target.value) setFormSupplierCode(e.target.value);
+                  }}
+                  className="px-2 py-2 border border-slate-300 rounded-lg text-xs bg-white text-slate-800 focus:outline-none focus:border-blue-500 min-w-[160px] cursor-pointer"
+                >
+                  <option value="">-- Choose Supplier --</option>
+                  {suppliersList.map((s) => (
+                    <option key={s.id} value={s.supplierCode}>
+                      {s.supplierCode} ({s.name})
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+            <datalist id="inventory-suppliers-list">
+              {suppliersList.map((s) => (
+                <option key={s.id} value={s.supplierCode} label={s.name} />
+              ))}
+            </datalist>
           </div>
 
           <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
