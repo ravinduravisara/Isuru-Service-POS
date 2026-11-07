@@ -176,11 +176,15 @@ model Invoice {
   paymentMethod    String        @default("Cash")
   paymentStatus    String        @default("Paid")
   paymentSettledAt DateTime?
+  clientTxId       String?       @unique
+  isProvisional    Boolean       @default(false)
+  syncedAt         DateTime?
   items            InvoiceItem[]
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
 
   @@index([billNo])
+  @@index([clientTxId])
   @@index([customerName])
   @@index([vehicleNo])
   @@index([dateTime])
@@ -205,4 +209,23 @@ model InvoiceItem {
   @@index([invoiceId])
   @@index([itemId])
   @@map("invoice_items")
+}
+
+model SyncOperation {
+  id            String    @id @default(uuid())
+  clientOpId    String    @unique
+  deviceId      String    @default("pos-main")
+  operationType String
+  status        String    @default("PENDING") // PENDING, APPLIED, CONFLICT, FAILED
+  payload       String    @db.Text
+  response      String?   @db.Text
+  errorMessage  String?   @db.Text
+  appliedAt     DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([clientOpId])
+  @@index([deviceId])
+  @@index([status])
+  @@map("sync_operations")
 }

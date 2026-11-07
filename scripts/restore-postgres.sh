@@ -139,6 +139,7 @@ fi
 
 # 4. DATABASE RESTORATION
 echo "-> [3/4] Executing database restoration into '${TARGET_DB}'..."
+TARGET_CONN_URL="${DIRECT_DATABASE_URL:-${DATABASE_URL:-}}"
 
 # Ensure target database exists if restoring into an isolated test database
 if [[ "${TARGET_DB}" != "${POSTGRES_DB}" ]]; then
@@ -152,14 +153,20 @@ if [[ "${TARGET_DB}" != "${POSTGRES_DB}" ]]; then
   fi
 fi
 
-if [[ -n "${DETECTED_CONTAINER}" ]]; then
+if [[ -n "${TARGET_CONN_URL}" && "${TARGET_CONN_URL}" =~ ^postgres(ql)?:\/\/ ]] && command -v psql >/dev/null 2>&1; then
+  echo "   Restoring directly into configured database URL using host psql..."
+  gunzip -c "${WORK_FILE}" | psql "${TARGET_CONN_URL}" >/dev/null
+elif [[ -n "${TARGET_CONN_URL}" && "${TARGET_CONN_URL}" =~ ^postgres(ql)?:\/\/ ]] && command -v docker >/dev/null 2>&1; then
+  echo "   Restoring directly into configured database URL using ephemeral docker container..."
+  gunzip -c "${WORK_FILE}" | docker run --rm --net=host -i postgres:16-alpine psql "${TARGET_CONN_URL}" >/dev/null
+elif [[ -n "${DETECTED_CONTAINER}" ]]; then
   echo "   Restoring into container: ${DETECTED_CONTAINER}..."
   gunzip -c "${WORK_FILE}" | docker exec -i "${DETECTED_CONTAINER}" psql -U "${POSTGRES_USER}" -d "${TARGET_DB}" >/dev/null
 elif command -v psql >/dev/null 2>&1; then
   echo "   Restoring via local psql client..."
   gunzip -c "${WORK_FILE}" | PGPASSWORD="${POSTGRES_PASSWORD:-}" psql -h "${POSTGRES_HOST:-localhost}" -p "${POSTGRES_PORT:-5432}" -U "${POSTGRES_USER}" -d "${TARGET_DB}" >/dev/null
 else
-  echo "ERROR: Neither running Docker container nor host 'psql' client found."
+  echo "ERROR: Neither configured database URL, running Docker container, nor host 'psql' client found."
   [[ -n "${TMP_DECRYPTED}" ]] && rm -f "${TMP_DECRYPTED}"
   exit 1
 fi

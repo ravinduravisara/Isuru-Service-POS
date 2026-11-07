@@ -12,19 +12,21 @@
 
 ```mermaid
 graph TD
-    Client["Client Web Browser / POS Terminal"] -->|HTTPS :8443| NginxProxy["Nginx Reverse Proxy (isuru-pos-prod-frontend)"]
-    NginxProxy -->|Serves Static SPA Assets| SPA["React.js SPA"]
+    Client["Client Web Browser / POS Terminal (Offline PWA)"] -->|HTTPS :8443| NginxProxy["Nginx Reverse Proxy (isuru-pos-prod-frontend)"]
+    Client -->|Local Storage| DexieDB[("Browser IndexedDB (Dexie)")]
+    NginxProxy -->|Serves Static PWA Shell & Service Worker| SPA["React.js PWA"]
     NginxProxy -->|Proxies /api & /uploads| BackendAPI["Node.js + Express API (isuru-pos-prod-backend)"]
-    BackendAPI -->|Prisma ORM Connection Pool| PostgresDB["PostgreSQL 16 DB (isuru-pos-prod-postgres)"]
-    PostgresDB -->|Persists Data| PGVolume[("Docker Volume: isuru_pos_prod_pgdata")]
+    BackendAPI -->|Prisma Pooled Connection (PgBouncer)| NeonPooler["Neon Serverless PostgreSQL (Pooled)"]
+    BackendAPI -->|Prisma Direct Connection (Migrations & DDL)| NeonDirect["Neon PostgreSQL (Direct)"]
     BackendAPI -->|Persists Uploads| UploadVolume[("Docker Volume: isuru_pos_prod_uploads")]
 ```
 
 ### Architecture Highlights
-- **Frontend**: React 18 SPA built with Vite and TailwindCSS, served via Nginx with client-side SPA routing fallback, gzip compression, and HTTP security headers (`nosniff`, `SAMEORIGIN`, `strict-origin-when-cross-origin`).
+- **Frontend**: React 18 PWA built with Vite and TailwindCSS, served via Nginx with client-side SPA routing fallback, service worker asset caching, and HTTP security headers (`nosniff`, `SAMEORIGIN`, `strict-origin-when-cross-origin`).
+- **Offline Storage & Sync Engine**: IndexedDB via Dexie with typed transaction outbox (`pendingInvoices`, `syncQueue`, `cachedProducts`, `cachedServices`). Invoices created offline are assigned provisional bill numbers (`OFF-YYYYMMDD-XXXX`) and automatically synchronized with exponential backoff once reconnected.
 - **Backend**: Node.js 22 LTS with Express, Prisma ORM 6.19, Zod schema validation, JWT authentication, and structured logging.
-- **Database**: PostgreSQL 16 on Alpine with connection pooling, transactional stock/financial operations, and strict referential constraints.
-- **Isolation**: Custom Docker bridge network (`isuru_pos_prod_net`). PostgreSQL port `5432` is strictly private and never published to the public internet or host interfaces.
+- **Database**: External Neon Serverless PostgreSQL with SSL and PgBouncer connection pooling. VPS runs application containers only with zero local database containers in production.
+- **Isolation**: Custom Docker bridge network (`isuru_pos_prod_net`). Port `8443` is mapped for HTTPS without affecting host ports 80, 443, or 8080.
 
 ---
 

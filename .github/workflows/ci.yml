@@ -44,9 +44,9 @@ jobs:
 
       - name: Install Workspace Dependencies
         run: |
-          npm ci || npm install
-          cd backend && npm ci || npm install
-          cd ../frontend && npm ci || npm install
+          npm ci
+          cd backend && npm ci
+          cd ../frontend && npm ci
 
       - name: Generate Prisma ORM Client
         run: |

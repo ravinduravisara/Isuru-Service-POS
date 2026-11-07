@@ -76,14 +76,22 @@ fi
 
 # 1. DATABASE DUMP
 echo "-> [1/4] Performing PostgreSQL database backup..."
-if [[ -n "${DETECTED_CONTAINER}" ]]; then
+TARGET_CONN_URL="${DIRECT_DATABASE_URL:-${DATABASE_URL:-}}"
+
+if [[ -n "${TARGET_CONN_URL}" && "${TARGET_CONN_URL}" =~ ^postgres(ql)?:\/\/ ]] && command -v pg_dump >/dev/null 2>&1; then
+  echo "   Dumping directly from configured database URL using host pg_dump..."
+  pg_dump "${TARGET_CONN_URL}" --clean --if-exists --no-owner | gzip -9 > "${DB_BACKUP_PATH}"
+elif [[ -n "${TARGET_CONN_URL}" && "${TARGET_CONN_URL}" =~ ^postgres(ql)?:\/\/ ]] && command -v docker >/dev/null 2>&1; then
+  echo "   Dumping directly from configured database URL using ephemeral docker container..."
+  docker run --rm --net=host -i postgres:16-alpine pg_dump "${TARGET_CONN_URL}" --clean --if-exists --no-owner | gzip -9 > "${DB_BACKUP_PATH}"
+elif [[ -n "${DETECTED_CONTAINER}" ]]; then
   echo "   Dumping from active Docker container: ${DETECTED_CONTAINER}..."
   docker exec -t "${DETECTED_CONTAINER}" pg_dump -U "${POSTGRES_USER}" --clean --if-exists --no-owner "${POSTGRES_DB}" | gzip -9 > "${DB_BACKUP_PATH}"
 elif command -v pg_dump >/dev/null 2>&1; then
   echo "   Dumping using host pg_dump client..."
   PGPASSWORD="${POSTGRES_PASSWORD:-}" pg_dump -h "${POSTGRES_HOST:-localhost}" -p "${POSTGRES_PORT:-5432}" -U "${POSTGRES_USER}" --clean --if-exists --no-owner "${POSTGRES_DB}" | gzip -9 > "${DB_BACKUP_PATH}"
 else
-  echo "ERROR: Neither running Docker container nor host 'pg_dump' utility found."
+  echo "ERROR: Neither configured database URL, running Docker container, nor host 'pg_dump' utility found."
   exit 1
 fi
 

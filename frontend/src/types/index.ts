@@ -77,6 +77,9 @@ export interface Invoice {
   paymentMethod: PaymentMethod;
   paymentStatus: PaymentStatus;
   paymentSettledAt?: string | null;
+  clientTxId?: string;
+  isProvisional?: boolean;
+  syncedAt?: string | null;
   items: InvoiceItem[];
 }
 

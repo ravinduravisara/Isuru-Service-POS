@@ -15,6 +15,8 @@ import {
   HelpCircle,
 } from 'lucide-react';
 import { InvoicePrintModal } from '../components/printing/InvoicePrintModal';
+import { offlineSyncService } from '../services/offlineSyncService';
+import { offlineDb } from '../db/offlineDb';
 
 interface BillingRow {
   service: string;
@@ -79,6 +81,7 @@ export const BillingPage: React.FC = () => {
   useEffect(() => {
     fetchBusinessProfile();
     fetchVehicleTypes();
+    offlineSyncService.warmLocalCache();
   }, []);
 
   const fetchVehicleTypes = async () => {
@@ -114,9 +117,32 @@ export const BillingPage: React.FC = () => {
   const fetchServicesForCategory = async (cat: VehicleType) => {
     try {
       const res = await api.get(`/services?category=${encodeURIComponent(cat)}&includeCustom=true`);
-      setAvailableServices(res.data.services || []);
+      if (res.data?.services && res.data.services.length > 0) {
+        setAvailableServices(res.data.services);
+        return;
+      }
     } catch (err) {
-      console.error('Failed to load services for category:', cat, err);
+      console.warn('Network fetch for services failed, trying offline cache:', err);
+    }
+
+    // Offline fallback from IndexedDB
+    try {
+      const cached = await offlineDb.cachedServices
+        .filter((s) => s.category.toLowerCase() === cat.toLowerCase() || s.category.toLowerCase() === 'custom')
+        .toArray();
+      if (cached.length > 0) {
+        setAvailableServices(
+          cached.map((c) => ({
+            id: c.id,
+            category: c.category as VehicleType,
+            name: c.name,
+            price: c.price,
+            description: c.description || '',
+          }))
+        );
+      }
+    } catch (dbErr) {
+      console.error('Failed to load cached services:', dbErr);
     }
   };
 
@@ -139,7 +165,7 @@ export const BillingPage: React.FC = () => {
     setRows([...existing, ...newRows]);
   };
 
-  // Customer search handler
+  // Customer search handler with offline IndexedDB fallback
   useEffect(() => {
     if (!customerSearchQuery.trim() || selectedCustomer) {
       setCustomerSearchResults([]);
@@ -148,10 +174,38 @@ export const BillingPage: React.FC = () => {
     const timer = setTimeout(async () => {
       try {
         const res = await api.get(`/customers/search?q=${encodeURIComponent(customerSearchQuery)}`);
-        setCustomerSearchResults(res.data.customers || []);
-        setIsCustomerDropdownOpen(true);
+        if (res.data?.customers && res.data.customers.length > 0) {
+          setCustomerSearchResults(res.data.customers);
+          setIsCustomerDropdownOpen(true);
+          return;
+        }
       } catch (err) {
-        console.error('Customer search failed', err);
+        console.warn('Network customer search failed, checking offline cache:', err);
+      }
+
+      // Offline fallback
+      try {
+        const q = customerSearchQuery.trim().toLowerCase();
+        const cached = await offlineDb.cachedCustomers
+          .filter((c) => c.name.toLowerCase().includes(q) || c.phone.includes(q))
+          .limit(10)
+          .toArray();
+        if (cached.length > 0) {
+          setCustomerSearchResults(
+            cached.map((c) => ({
+              id: c.id,
+              name: c.name,
+              phone: c.phone,
+              idNo: c.nic,
+              bankDetails: c.bankDetails,
+              createdAt: c.updatedAt || '',
+              vehicles: [],
+            }))
+          );
+          setIsCustomerDropdownOpen(true);
+        }
+      } catch (dbErr) {
+        console.error('Offline customer search failed:', dbErr);
       }
     }, 250);
     return () => clearTimeout(timer);
@@ -219,7 +273,7 @@ export const BillingPage: React.FC = () => {
     });
   };
 
-  // Lookup Product Item ID
+  // Lookup Product Item ID with offline IndexedDB fallback
   const handleItemIdChange = async (index: number, itemId: string) => {
     const upperId = itemId.trim().toUpperCase();
     setRows((prev) => {
@@ -229,28 +283,55 @@ export const BillingPage: React.FC = () => {
     });
 
     if (upperId.length >= 3) {
+      let foundProd: any = null;
+
+      // 1. Try server lookup
       try {
-        const res = await api.get(`/inventory/lookup?itemId=${upperId}`);
+        const res = await api.get(`/inventory/lookup?itemId=${encodeURIComponent(upperId)}`);
         if (res.data?.product) {
-          const prod = res.data.product;
-          setRows((prev) => {
-            const updated = [...prev];
-            const rate = prod.unitPrice || updated[index].rate;
-            const desc = prod.brand ? `${prod.itemName} (${prod.brand})` : prod.itemName;
-            const amount = Math.round(updated[index].qty * rate * 100) / 100;
-            updated[index] = {
-              ...updated[index],
-              itemId: prod.itemId,
-              service: updated[index].service || prod.itemName,
-              description: desc,
-              rate,
-              amount,
-            };
-            return updated;
-          });
+          foundProd = res.data.product;
         }
       } catch {
-        // Not found yet or network ignore
+        // Fall back to offline
+      }
+
+      // 2. Offline fallback from local IndexedDB
+      if (!foundProd) {
+        try {
+          const directMatch = await offlineDb.cachedProducts
+            .where('itemId')
+            .equalsIgnoreCase(upperId)
+            .first();
+          if (directMatch) {
+            foundProd = directMatch;
+          } else {
+            // Search slash part-numbers or partial match
+            const partialMatch = await offlineDb.cachedProducts
+              .filter((p) => p.itemId.toUpperCase().includes(upperId))
+              .first();
+            if (partialMatch) foundProd = partialMatch;
+          }
+        } catch (dbErr) {
+          console.error('Offline product lookup error:', dbErr);
+        }
+      }
+
+      if (foundProd) {
+        setRows((prev) => {
+          const updated = [...prev];
+          const rate = foundProd.unitPrice || updated[index].rate;
+          const desc = foundProd.brand ? `${foundProd.itemName} (${foundProd.brand})` : foundProd.itemName;
+          const amount = Math.round(updated[index].qty * rate * 100) / 100;
+          updated[index] = {
+            ...updated[index],
+            itemId: foundProd.itemId,
+            service: updated[index].service || foundProd.itemName,
+            description: desc,
+            rate,
+            amount,
+          };
+          return updated;
+        });
       }
     }
   };
@@ -299,10 +380,11 @@ export const BillingPage: React.FC = () => {
 
     setIsSubmitting(true);
     try {
-      const payload = {
-        customerId: selectedCustomer?.id,
+      const invoiceData = {
+        customerId: selectedCustomer?.id || null,
         customerName: targetCustomerName,
         customerPhone: customerPhone.trim(),
+        vehicleId: customerVehicles.find((v) => v.vehicleNo === vehicleNo.trim().toUpperCase())?.id || null,
         vehicleNo: vehicleNo.trim().toUpperCase(),
         vehicleType,
         items: validRows.map((r) => ({
@@ -313,22 +395,58 @@ export const BillingPage: React.FC = () => {
           rate: Number(r.rate) || 0,
           amount: r.amount,
         })),
-        discount: safeDiscount,
+        subtotalAmount: subtotal,
+        discountAmount: safeDiscount,
+        totalAmount: grandTotal,
         paymentMethod,
+        paymentStatus: 'Paid',
       };
 
-      const res = await api.post('/invoices', payload);
-      if (res.data?.success && res.data?.invoice) {
-        setCreatedInvoice(res.data.invoice);
-        setIsPrintModalOpen(true);
-        setSuccessMessage(`Invoice ${res.data.invoice.billNo} generated successfully!`);
+      const result = await offlineSyncService.createInvoice(invoiceData);
+      const invoice = result.invoice;
 
-        // Reset form for next billing
-        handleResetForm();
+      const displayInvoice: Invoice = {
+        id: invoice.id,
+        billNo: invoice.finalBillNo || invoice.billNo,
+        customerId: invoice.customerId || '',
+        customerName: invoice.customerName,
+        customerPhone: invoice.customerPhone || '',
+        vehicleId: invoice.vehicleId || '',
+        vehicleNo: invoice.vehicleNo,
+        vehicleType: invoice.vehicleType,
+        dateTime: invoice.dateTime,
+        subtotalAmount: invoice.subtotalAmount,
+        discountAmount: invoice.discountAmount,
+        totalAmount: invoice.totalAmount,
+        paymentMethod: invoice.paymentMethod as PaymentMethod,
+        paymentStatus: 'Paid',
+        isProvisional: invoice.isProvisional,
+        items: invoice.items.map((it) => ({
+          service: it.service,
+          itemId: it.itemId,
+          description: it.description,
+          qty: it.qty,
+          rate: it.rate,
+          amount: it.amount,
+        })),
+      };
+
+      setCreatedInvoice(displayInvoice);
+      setIsPrintModalOpen(true);
+
+      if (result.syncedImmediately) {
+        setSuccessMessage(`Invoice ${displayInvoice.billNo} generated and synced to cloud!`);
+      } else {
+        setSuccessMessage(
+          `Provisional Invoice ${displayInvoice.billNo} saved locally! It will automatically sync once connected.`
+        );
       }
+
+      // Reset form for next billing
+      handleResetForm();
     } catch (err: any) {
       setErrorMessage(
-        err.response?.data?.error || 'Failed to generate invoice. Please check inputs.'
+        err.response?.data?.error || err.message || 'Failed to generate invoice. Please check inputs.'
       );
     } finally {
       setIsSubmitting(false);
@@ -338,10 +456,13 @@ export const BillingPage: React.FC = () => {
     customerSearchQuery,
     selectedCustomer,
     customerPhone,
+    customerVehicles,
     vehicleNo,
     vehicleType,
     rows,
+    subtotal,
     safeDiscount,
+    grandTotal,
     paymentMethod,
   ]);
 

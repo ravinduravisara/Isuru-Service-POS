@@ -32,6 +32,8 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({
     window.print();
   };
 
+  const isProvisional = Boolean(invoice.isProvisional || invoice.billNo?.startsWith('OFF-'));
+
   const formattedDate = new Date(invoice.dateTime).toLocaleString('en-LK', {
     timeZone: 'Asia/Colombo',
     year: 'numeric',
@@ -105,10 +107,24 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({
                 <p className="text-xs text-slate-600 font-mono">Tel: {businessProfile.phone}</p>
               </div>
               <div className="text-right">
-                <span className="text-lg font-black tracking-widest text-blue-900 uppercase">INVOICE</span>
+                <span className={`text-lg font-black tracking-widest uppercase ${isProvisional ? 'text-amber-600' : 'text-blue-900'}`}>
+                  {isProvisional ? 'PROVISIONAL' : 'INVOICE'}
+                </span>
                 <p className="text-xs font-mono font-bold mt-1 text-slate-800">#{invoice.billNo}</p>
+                {isProvisional && (
+                  <span className="inline-block mt-1 px-1.5 py-0.5 text-[9px] font-bold bg-amber-100 text-amber-800 rounded">
+                    OFFLINE
+                  </span>
+                )}
               </div>
             </div>
+
+            {/* Provisional Alert Banner */}
+            {isProvisional && (
+              <div className="mt-3 p-2 bg-amber-50 border border-dashed border-amber-400 rounded-md text-amber-800 text-center font-bold text-xs uppercase tracking-wider">
+                ⚠ Provisional Invoice — Saved Locally on POS (Pending Cloud Sync)
+              </div>
+            )}
 
             {/* Metadata Grid */}
             <div className="grid grid-cols-2 gap-4 py-4 text-xs border-b border-slate-200">
@@ -197,7 +213,10 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({
               <p className="text-[10px] font-normal">{businessProfile.address}</p>
               <p className="text-[10px] font-normal">Tel: {businessProfile.phone}</p>
               <p className="mt-1">----------------------------------------</p>
-              <p className="font-bold">INVOICE</p>
+              <p className="font-bold">{isProvisional ? 'PROVISIONAL INVOICE (OFFLINE)' : 'INVOICE'}</p>
+              {isProvisional && (
+                <p className="text-[10px] text-amber-700 font-bold">* PENDING SERVER SYNC *</p>
+              )}
               <p className="font-normal text-left text-[11px]">Bill: {invoice.billNo}</p>
               <p className="font-normal text-left text-[11px]">Date: {formattedDate}</p>
               <p className="font-normal text-left text-[11px]">Cust: {invoice.customerName} {invoice.customerPhone ? `(${invoice.customerPhone})` : ''}</p>

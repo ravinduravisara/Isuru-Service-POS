@@ -2,6 +2,7 @@ import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { PlusCircle, ShieldCheck, UserCheck, Menu } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
+import { SyncStatusBadge } from '../ui/SyncStatusBadge';
 
 interface NavbarProps {
   onToggleSidebar?: () => void;
@@ -62,6 +63,8 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar }) => {
       </div>
 
       <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+        <SyncStatusBadge />
+
         {location.pathname !== '/billing' && (
           <Link
             to="/billing"

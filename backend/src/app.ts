@@ -19,6 +19,7 @@ import { supplyInvoicesRouter } from './modules/supplyInvoices/supplyInvoices.ro
 import { invoicesRouter } from './modules/invoices/invoices.routes.js';
 import { profitRouter } from './modules/profit/profit.routes.js';
 import { settingsRouter } from './modules/settings/settings.routes.js';
+import { syncRouter } from './modules/sync/sync.routes.js';
 
 export const app = express();
 
@@ -94,6 +95,7 @@ app.use('/api/v1/supply-invoices', supplyInvoicesRouter);
 app.use('/api/v1/invoices', invoicesRouter);
 app.use('/api/v1/profit-statement', profitRouter);
 app.use('/api/v1/settings', settingsRouter);
+app.use('/api/v1/sync', syncRouter);
 
 // Centralized error handling
 app.use(errorHandler);
