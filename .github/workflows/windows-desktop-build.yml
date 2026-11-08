@@ -6,10 +6,6 @@ on:
     branches: [ windows-setup, main ]
     tags: [ 'v*-win' ]
 
-concurrency:
-  group: windows-desktop-build-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   build-windows-installer:
     name: Build ISURU-POS-Setup.exe (Windows x64)
