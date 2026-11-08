@@ -241,11 +241,11 @@ synchronous_commit = on
     }
 
     const logFile = path.join(dataDir, 'logs', 'postgres.log');
-    const logStream = fs.createWriteStream(logFile, { flags: 'a' });
+    const logFd = fs.openSync(logFile, 'a');
 
     this.postgresProcess = spawn(postgresExe, ['-D', pgDataDir, '-p', String(this.postgresPort)], {
       detached: false,
-      stdio: ['ignore', logStream, logStream],
+      stdio: ['ignore', logFd, logFd],
     });
 
     this.postgresProcess.on('error', (err) => {
@@ -295,12 +295,12 @@ synchronous_commit = on
     };
 
     const logFile = path.join(dataDir, 'logs', 'backend.log');
-    const logStream = fs.createWriteStream(logFile, { flags: 'a' });
+    const logFd = fs.openSync(logFile, 'a');
 
     this.backendProcess = spawn(nodeRuntime, [backendEntry], {
       env,
       detached: false,
-      stdio: ['ignore', logStream, logStream],
+      stdio: ['ignore', logFd, logFd],
     });
 
     this.backendProcess.on('error', (err) => {
