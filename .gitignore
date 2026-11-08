@@ -44,6 +44,7 @@ backend/uploads/*
 backups/
 *.sql.gz
 *.sha256
+*.zip
 docker/ssl/
 *.key
 *.pem
