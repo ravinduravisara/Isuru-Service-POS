@@ -75,6 +75,15 @@ async function main() {
     execSync(`tar -xf "${TEMP_ZIP}" -C "${path.dirname(targetPgsqlDir)}"`, { stdio: 'inherit' });
     console.log('✔ Extracted successfully.');
 
+    // Prune unneeded GUI management tools and documentation to save ~200MB
+    const unneeded = ['pgAdmin 4', 'doc', 'symbols', 'include'];
+    for (const folder of unneeded) {
+      const p = path.join(targetPgsqlDir, folder);
+      if (fs.existsSync(p)) {
+        fs.rmSync(p, { recursive: true, force: true });
+      }
+    }
+
     if (fs.existsSync(TEMP_ZIP)) {
       fs.unlinkSync(TEMP_ZIP);
     }

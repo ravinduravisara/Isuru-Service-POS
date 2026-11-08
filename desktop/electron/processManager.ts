@@ -272,19 +272,23 @@ synchronous_commit = on
       ? path.join(process.resourcesPath, 'backend', 'dist', 'server.js')
       : path.join(__dirname, '..', '..', '..', 'backend', 'dist', 'server.js');
 
-    const nodeRuntime = isPackaged
-      ? (process.platform === 'win32' ? path.join(process.resourcesPath, 'node', 'node.exe') : 'node')
-      : process.execPath;
+    // In Electron, process.execPath is the Electron executable.
+    // Setting ELECTRON_RUN_AS_NODE=1 makes it run exactly as Node.js without needing a separate node.exe!
+    const nodeRuntime = process.execPath;
 
     const databaseUrl = `postgresql://isuru_pos_user:${this.dbPassword || 'Isuru2026POS'}@127.0.0.1:${this.postgresPort}/isuru_pos?schema=public`;
 
-    const env = {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
+      ELECTRON_RUN_AS_NODE: '1',
       NODE_ENV: 'production',
       PORT: String(this.backendPort),
       DATABASE_URL: databaseUrl,
       JWT_SECRET: 'isuru_pos_desktop_cryptographically_secure_local_secret_2026_minimum_64_bytes!',
       UPLOAD_DIR: path.join(dataDir, 'uploads'),
+      CLIENT_BUILD_DIR: isPackaged
+        ? path.join(process.resourcesPath, 'frontend', 'dist')
+        : path.resolve(__dirname, '..', '..', '..', 'frontend', 'dist'),
       POS_ROLE: 'LOCAL_PRIMARY',
       CLOUD_SYNC_ENABLED: 'true',
       POS_DEVICE_ID: 'pos-main',
