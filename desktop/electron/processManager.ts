@@ -336,22 +336,26 @@ synchronous_commit = on
       console.warn('[ProcessManager] Database check/create note:', err.message);
     }
 
-    // Quick verification: If core tables already exist, skip redundant re-runs
+    const isPackaged = app.isPackaged;
+    const prismaBase = isPackaged
+      ? path.join(process.resourcesPath, 'backend', 'prisma')
+      : path.join(__dirname, '..', '..', '..', 'backend', 'prisma');
+
+    // Quick verification: If core tables already exist AND seed user exists, skip redundant re-runs
     try {
       const tableCheck = await runPsql('isuru_pos', "SELECT to_regclass('public.users');");
       if (tableCheck && tableCheck.includes('users')) {
-        console.log('[ProcessManager] Database tables already present and verified.');
-        onProgress?.('Local database and tables verified.');
-        return;
+        const isuruCheck = await runPsql('isuru_pos', "SELECT count(*) FROM users WHERE username = 'Isuru@6800';");
+        if (isuruCheck && parseInt(isuruCheck, 10) > 0) {
+          console.log('[ProcessManager] Database tables and production accounts verified.');
+          onProgress?.('Local database verified.');
+          return;
+        }
       }
     } catch {}
 
     // 2. Locate migrations
-    const isPackaged = app.isPackaged;
-    const migrationsBase = isPackaged
-      ? path.join(process.resourcesPath, 'backend', 'prisma', 'migrations')
-      : path.join(__dirname, '..', '..', '..', 'backend', 'prisma', 'migrations');
-
+    const migrationsBase = path.join(prismaBase, 'migrations');
     if (fs.existsSync(migrationsBase)) {
       try {
         const entries = fs.readdirSync(migrationsBase, { withFileTypes: true });
@@ -374,6 +378,18 @@ synchronous_commit = on
         }
       } catch (err: any) {
         console.error('[ProcessManager] Error applying migrations:', err);
+      }
+    }
+
+    // 3. Apply Production Offline Seed Data (Users, Settings, Suppliers, Services, Products)
+    const seedSqlFile = path.join(prismaBase, 'seed-data.sql');
+    if (fs.existsSync(seedSqlFile)) {
+      onProgress?.('Seeding production data (users, inventory, services)...');
+      try {
+        await runPsql('isuru_pos', seedSqlFile, true);
+        console.log('[ProcessManager] Production offline seed data applied successfully.');
+      } catch (seedErr: any) {
+        console.warn('[ProcessManager] Seed SQL application notice:', seedErr.message);
       }
     }
 

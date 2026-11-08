@@ -2,11 +2,13 @@ import { app } from './app.js';
 import { connectDB, disconnectDB } from './config/database.js';
 import { ENV } from './config/env.js';
 import { bootstrapAdminIfNeeded } from './modules/auth/auth.controller.js';
+import { seedDatabaseIfNeeded } from './services/seed.service.js';
 import { startSyncWorker, stopSyncWorker } from './services/sync-worker.service.js';
 
 async function startServer() {
   await connectDB();
   await bootstrapAdminIfNeeded();
+  await seedDatabaseIfNeeded();
 
   const server = app.listen(ENV.PORT, () => {
     console.log(`====================================================`);
