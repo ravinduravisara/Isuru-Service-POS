@@ -230,18 +230,25 @@ synchronous_commit = on
     const pgBinDir = this.getPostgresBinDir();
     const postgresExe = path.join(pgBinDir, process.platform === 'win32' ? 'postgres.exe' : 'postgres');
 
+    // Check if PostgreSQL is already running on this port
+    const isAlreadyRunning = await this.waitForPort(this.postgresPort, 1500);
+    if (isAlreadyRunning) {
+      console.log(`[ProcessManager] Local PostgreSQL is already active on port ${this.postgresPort}.`);
+      onProgress?.('Local PostgreSQL engine is running.');
+      return;
+    }
+
     if (!fs.existsSync(postgresExe)) {
-      console.warn('[ProcessManager] Portable postgres.exe not bundled. Attempting port check on 5432.');
-      const isAlreadyRunning = await this.waitForPort(this.postgresPort, 2000);
-      if (isAlreadyRunning) {
-        onProgress?.('Connected to existing local database instance.');
-        return;
-      }
       throw new Error(`PostgreSQL engine binary was not found at: ${postgresExe}`);
     }
 
     const logFile = path.join(dataDir, 'logs', 'postgres.log');
-    const logFd = fs.openSync(logFile, 'a');
+    let logFd: number | 'ignore' = 'ignore';
+    try {
+      logFd = fs.openSync(logFile, 'a');
+    } catch (e) {
+      console.warn('[ProcessManager] Could not open postgres.log for writing:', e);
+    }
 
     this.postgresProcess = spawn(postgresExe, ['-D', pgDataDir, '-p', String(this.postgresPort)], {
       detached: false,
@@ -253,9 +260,20 @@ synchronous_commit = on
       console.error('[ProcessManager] PostgreSQL process error:', err);
     });
 
-    const ready = await this.waitForPort(this.postgresPort, 12000);
+    const ready = await this.waitForPort(this.postgresPort, 15000);
     if (!ready) {
-      throw new Error(`Local PostgreSQL did not start on port ${this.postgresPort} within timeout.`);
+      let logTail = '';
+      try {
+        if (fs.existsSync(logFile)) {
+          const logContent = fs.readFileSync(logFile, 'utf8');
+          logTail = logContent.slice(-1500).trim();
+        }
+      } catch {}
+      throw new Error(
+        `Local PostgreSQL did not start on port ${this.postgresPort} within timeout.${
+          logTail ? `\n\nPostgreSQL Log:\n${logTail}` : ''
+        }`
+      );
     }
 
     onProgress?.('Local PostgreSQL engine is running.');
@@ -318,6 +336,16 @@ synchronous_commit = on
       console.warn('[ProcessManager] Database check/create note:', err.message);
     }
 
+    // Quick verification: If core tables already exist, skip redundant re-runs
+    try {
+      const tableCheck = await runPsql('isuru_pos', "SELECT to_regclass('public.users');");
+      if (tableCheck && tableCheck.includes('users')) {
+        console.log('[ProcessManager] Database tables already present and verified.');
+        onProgress?.('Local database and tables verified.');
+        return;
+      }
+    } catch {}
+
     // 2. Locate migrations
     const isPackaged = app.isPackaged;
     const migrationsBase = isPackaged
@@ -360,6 +388,14 @@ synchronous_commit = on
     const dataDir = this.getDataDirectory();
     const isPackaged = app.isPackaged;
 
+    const backendUrl = `http://127.0.0.1:${this.backendPort}`;
+    const alreadyHealthy = await this.waitForHttpHealth(`${backendUrl}/api/v1/health`, 1500);
+    if (alreadyHealthy) {
+      console.log(`[ProcessManager] Local backend is already active on port ${this.backendPort}.`);
+      onProgress?.('Local POS backend is ready.');
+      return backendUrl;
+    }
+
     const backendDir = isPackaged
       ? path.join(process.resourcesPath, 'backend')
       : path.resolve(__dirname, '..', '..', '..', 'backend');
@@ -383,13 +419,19 @@ synchronous_commit = on
       CLIENT_BUILD_DIR: isPackaged
         ? path.join(process.resourcesPath, 'frontend', 'dist')
         : path.resolve(__dirname, '..', '..', '..', 'frontend', 'dist'),
+      CORS_ORIGIN: `http://127.0.0.1:${this.backendPort},http://localhost:${this.backendPort},http://localhost:5173,http://localhost:8081,https://88.222.242.20:8443`,
       POS_ROLE: 'LOCAL_PRIMARY',
       CLOUD_SYNC_ENABLED: 'true',
       POS_DEVICE_ID: 'pos-main',
     };
 
     const logFile = path.join(dataDir, 'logs', 'backend.log');
-    const logFd = fs.openSync(logFile, 'a');
+    let logFd: number | 'ignore' = 'ignore';
+    try {
+      logFd = fs.openSync(logFile, 'a');
+    } catch (e) {
+      console.warn('[ProcessManager] Could not open backend.log for writing:', e);
+    }
 
     this.backendProcess = spawn(nodeRuntime, [backendEntry], {
       cwd: backendDir,
@@ -407,8 +449,7 @@ synchronous_commit = on
     });
 
     // Wait for health endpoint
-    const backendUrl = `http://127.0.0.1:${this.backendPort}`;
-    const ready = await this.waitForHttpHealth(`${backendUrl}/api/v1/health`, 25000);
+    const ready = await this.waitForHttpHealth(`${backendUrl}/api/v1/health`, 30000);
 
     if (!ready) {
       let logTail = '';

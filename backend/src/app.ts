@@ -46,23 +46,44 @@ app.use(
         return callback(null, true);
       }
 
+      // Always allow loopback origins for local operation, desktop Electron, and local frontend
+      if (
+        origin.includes('localhost') ||
+        origin.includes('127.0.0.1') ||
+        origin.startsWith('file://') ||
+        origin.startsWith('vscode-file://') ||
+        origin === 'null'
+      ) {
+        return callback(null, true);
+      }
+
+      // Check same-origin hostname
+      try {
+        const originUrl = new URL(origin);
+        if (originUrl.hostname === '127.0.0.1' || originUrl.hostname === 'localhost') {
+          return callback(null, true);
+        }
+      } catch {}
+
       // Validate against configured allowed origins
       const isAllowed = ENV.ALLOWED_ORIGINS.some((allowed) => {
         if (allowed === origin) return true;
-        // In development/test mode, allow localhost and loopback interfaces
-        if (!ENV.IS_PRODUCTION && (origin.includes('localhost') || origin.includes('127.0.0.1'))) {
-          return true;
+        if (allowed.startsWith('*.')) {
+          const domain = allowed.slice(2);
+          return origin.endsWith(domain);
         }
         return false;
       });
 
-      if (isAllowed) {
+      if (isAllowed || !ENV.IS_PRODUCTION || ENV.POS_ROLE === 'LOCAL_PRIMARY') {
         callback(null, true);
       } else {
         callback(new Error(`CORS Error: Origin ${origin} is not authorized.`));
       }
     },
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   })
 );
 app.use(cookieParser());
@@ -103,15 +124,46 @@ app.use('/api/v1/settings', settingsRouter);
 app.use('/api/v1/sync', syncRouter);
 
 // Serve compiled React SPA if present (Desktop Electron standalone or production bundle)
-const clientDistDir = process.env.CLIENT_BUILD_DIR || path.resolve(__dirname, '../../frontend/dist');
-if (fs.existsSync(clientDistDir)) {
-  app.use(express.static(clientDistDir));
+function resolveClientDistDir(): string | null {
+  const candidates = [
+    process.env.CLIENT_BUILD_DIR,
+    (process as any).resourcesPath ? path.join((process as any).resourcesPath, 'frontend', 'dist') : null,
+    path.resolve(process.cwd(), 'resources', 'frontend', 'dist'),
+    path.resolve(process.cwd(), 'frontend', 'dist'),
+    path.resolve(__dirname, '../../frontend/dist'),
+    path.resolve(__dirname, '../frontend/dist'),
+    path.resolve(__dirname, 'frontend/dist'),
+    path.resolve(__dirname, '../../resources/frontend/dist'),
+  ].filter(Boolean) as string[];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(path.join(candidate, 'index.html'))) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+const clientDistDir = resolveClientDistDir();
+if (clientDistDir) {
+  console.log(`[Frontend] Serving React UI bundle from: ${clientDistDir}`);
+  app.use(
+    express.static(clientDistDir, {
+      maxAge: '1d',
+      setHeaders: (res) => {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+      },
+    })
+  );
   app.get('*', (req, res, next) => {
     if (req.path.startsWith('/api') || req.path.startsWith('/uploads')) {
       return next();
     }
+    res.setHeader('Access-Control-Allow-Origin', '*');
     res.sendFile(path.join(clientDistDir, 'index.html'));
   });
+} else {
+  console.warn('[Frontend] Notice: Compiled React UI distribution not found in candidate paths.');
 }
 
 // Centralized error handling

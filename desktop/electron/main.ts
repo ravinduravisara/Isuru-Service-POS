@@ -133,16 +133,64 @@ function createMainWindow(targetUrl: string): BrowserWindow {
     return { action: 'deny' };
   });
 
+  // Diagnostics: Capture renderer console messages and load failures
+  const dataDir = ProcessManager.getDataDirectory();
+  const rendererLogFile = path.join(dataDir, 'logs', 'renderer.log');
+
+  win.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    const logLine = `[Renderer L${level}] ${message} (${sourceId}:${line})\n`;
+    try {
+      fs.appendFileSync(rendererLogFile, logLine);
+    } catch {}
+    if (level >= 2) {
+      console.warn(logLine.trim());
+    }
+  });
+
+  win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    if (errorCode !== -3) { // Ignore user/history navigation aborts
+      const errLine = `[Renderer Load Error] Code ${errorCode}: ${errorDescription} on ${validatedURL}\n`;
+      try {
+        fs.appendFileSync(rendererLogFile, errLine);
+      } catch {}
+      console.error(errLine.trim());
+    }
+  });
+
+  win.webContents.on('render-process-gone', (_event, details) => {
+    const crashLine = `[Renderer Crash] Reason: ${details.reason}, Exit Code: ${details.exitCode}\n`;
+    try {
+      fs.appendFileSync(rendererLogFile, crashLine);
+    } catch {}
+    console.error(crashLine.trim());
+  });
+
+  // Keyboard shortcut: Toggle DevTools with F12 for diagnostics
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.key === 'F12' && input.type === 'keyDown') {
+      win.webContents.toggleDevTools();
+      event.preventDefault();
+    }
+  });
+
   win.loadURL(targetUrl);
 
-  win.once('ready-to-show', () => {
+  let windowShown = false;
+  const showMainWindow = () => {
+    if (windowShown) return;
+    windowShown = true;
     if (splashWindow) {
       splashWindow.close();
       splashWindow = null;
     }
     win.show();
     win.focus();
-  });
+  };
+
+  win.once('ready-to-show', showMainWindow);
+
+  // Fallback: Ensure main window is shown even if ready-to-show is delayed
+  setTimeout(showMainWindow, 3500);
 
   win.on('closed', () => {
     mainWindow = null;
@@ -270,6 +318,10 @@ app.whenReady().then(async () => {
     mainWindow = createMainWindow(backendUrl);
   } catch (startupError: any) {
     console.error('[Startup Fatal Error]', startupError);
+    if (splashWindow) {
+      splashWindow.close();
+      splashWindow = null;
+    }
     dialog.showErrorBox(
       'ISURU POS Startup Error',
       `Failed to initialize local POS engine: ${startupError.message}\n\nPlease check Windows event logs or run diagnostics.`

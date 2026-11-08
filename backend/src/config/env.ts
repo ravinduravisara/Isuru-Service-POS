@@ -19,7 +19,7 @@ const envSchema = z.object({
   MONGODB_URI: z.string().default('mongodb://127.0.0.1:27017/isuru_billing'),
   JWT_SECRET: z.string().min(1, 'JWT_SECRET is required'),
   JWT_EXPIRES_IN: z.string().default('7d'),
-  CORS_ORIGIN: z.string().default('http://localhost:5173,http://localhost:8081,https://88.222.242.20:8443'),
+  CORS_ORIGIN: z.string().default('http://localhost:5173,http://localhost:8081,http://127.0.0.1:5050,http://localhost:5050,https://88.222.242.20:8443'),
   UPLOAD_DIR: z.string().default(path.resolve(__dirname, '../../uploads')),
   INITIAL_ADMIN_USERNAME: z.string().default('admin'),
   INITIAL_ADMIN_PASSWORD: z.string().default('Admin@ISURU2026!'),

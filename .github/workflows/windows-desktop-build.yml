@@ -62,6 +62,9 @@ jobs:
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
         run: |
+          npm config set fetch-retries 5
+          npm config set fetch-retry-mintimeout 20000
+          npm config set fetch-retry-maxtimeout 120000
           cd desktop
           npm ci || npm install
 
@@ -72,7 +75,24 @@ jobs:
           $zipPath = "desktop/windows/postgres/temp_postgres.zip"
           Write-Host "Downloading Portable PostgreSQL 16 from EnterpriseDB..."
           [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
-          Invoke-WebRequest -Uri "https://get.enterprisedb.com/postgresql/postgresql-16.6-1-windows-x64-binaries.zip" -OutFile $zipPath
+          $downloaded = $false
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            try {
+              Write-Host "Attempt $attempt of 3: Downloading PostgreSQL 16 binaries..."
+              Invoke-WebRequest -Uri "https://get.enterprisedb.com/postgresql/postgresql-16.6-1-windows-x64-binaries.zip" -OutFile $zipPath -TimeoutSec 300
+              if ((Test-Path $zipPath) -and ((Get-Item $zipPath).Length -gt 50MB)) {
+                $downloaded = $true
+                break
+              }
+            } catch {
+              Write-Warning "Attempt $attempt failed: $_"
+              Start-Sleep -Seconds 3
+            }
+          }
+          if (-not $downloaded) {
+            Write-Error "Failed to download PostgreSQL binaries after 3 attempts"
+            exit 1
+          }
           Write-Host "Extracting PostgreSQL binaries..."
           Expand-Archive -Path $zipPath -DestinationPath "desktop/windows/postgres" -Force
           Remove-Item -Force $zipPath

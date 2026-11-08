@@ -168,4 +168,57 @@ process.exit(0);
     expect(responseBody.status).toBe('ok');
     expect(responseBody.service).toBe('ISURU Service Center API');
   }, 15000);
+
+  it('should authorize loopback CORS requests with Origin: http://127.0.0.1:5050 in production mode', async () => {
+    const { app: importedApp } = await import(pathToFileURL(path.join(mockResourceDir, 'backend', 'dist', 'app.js')).href);
+
+    let statusCode = 0;
+    let responseBody: any = null;
+    const resHeaders: Record<string, string> = {};
+
+    await new Promise<void>((resolve, reject) => {
+      const mockReq = {
+        method: 'GET',
+        url: '/api/v1/health',
+        headers: {
+          host: '127.0.0.1:5050',
+          origin: 'http://127.0.0.1:5050',
+        },
+      };
+      const mockRes = {
+        statusCode: 200,
+        setHeader(name: string, value: string) {
+          resHeaders[name.toLowerCase()] = value;
+          return this;
+        },
+        getHeader(name: string) { return resHeaders[name.toLowerCase()] || ''; },
+        status(c: number) { statusCode = c; return this; },
+        json(data: any) {
+          statusCode = statusCode || 200;
+          responseBody = data;
+          resolve();
+        },
+        send(data: any) {
+          statusCode = statusCode || 200;
+          try { responseBody = JSON.parse(data); } catch { responseBody = data; }
+          resolve();
+        },
+        end() { resolve(); },
+      };
+
+      try {
+        importedApp.handle(mockReq, mockRes, (err: any) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      } catch (e) {
+        reject(e);
+      }
+    });
+
+    expect(statusCode).toBe(200);
+    expect(responseBody).toBeDefined();
+    expect(responseBody.status).toBe('ok');
+    expect(resHeaders['access-control-allow-origin']).toBe('http://127.0.0.1:5050');
+  });
 });
