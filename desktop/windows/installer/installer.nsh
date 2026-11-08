@@ -22,7 +22,8 @@
   CreateDirectory "${APP_DATA_DIR}\sync"
 
   ; Grant read/write permissions to standard user accounts so service can run with least privileges
-  AccessControl::GrantOnFile "${APP_DATA_DIR}" "(BU)" "FullAccess"
+  ; Using native Windows icacls to avoid third-party NSIS plugin dependencies
+  ExecWait 'icacls "${APP_DATA_DIR}" /grant "Users":(OI)(CI)F /t /q'
 
   DetailPrint "Local business data directory configured at: ${APP_DATA_DIR}"
 !macroend

@@ -15,6 +15,9 @@ jobs:
     name: Build ISURU-POS-Setup.exe (Windows x64)
     runs-on: windows-latest
     timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout Repository
@@ -55,9 +58,21 @@ jobs:
           npm install
 
       - name: Download & Extract Portable Windows PostgreSQL 16
+        shell: pwsh
         run: |
-          cd desktop
-          node scripts/download-windows-deps.mjs
+          New-Item -ItemType Directory -Force -Path "desktop/windows/postgres"
+          $zipPath = "desktop/windows/postgres/temp_postgres.zip"
+          Write-Host "Downloading Portable PostgreSQL 16 from EnterpriseDB..."
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+          Invoke-WebRequest -Uri "https://get.enterprisedb.com/postgresql/postgresql-16.6-1-windows-x64-binaries.zip" -OutFile $zipPath
+          Write-Host "Extracting PostgreSQL binaries..."
+          Expand-Archive -Path $zipPath -DestinationPath "desktop/windows/postgres" -Force
+          Remove-Item -Force $zipPath
+          if (!(Test-Path "desktop/windows/postgres/pgsql/bin/postgres.exe")) {
+            Write-Error "PostgreSQL extraction failed or postgres.exe was not found"
+            exit 1
+          }
+          Write-Host "✔ PostgreSQL 16 successfully verified at desktop/windows/postgres/pgsql/bin/postgres.exe"
 
       - name: Compile Electron Main Process & Pre-build Staging
         run: |
@@ -68,7 +83,7 @@ jobs:
       - name: Package Windows NSIS Installer (electron-builder)
         run: |
           cd desktop
-          npx electron-builder --win nsis --config electron-builder.yml
+          npx electron-builder --win nsis --config electron-builder.yml --publish never
 
       - name: Verify Installer Artifact
         shell: pwsh
