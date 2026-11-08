@@ -11,6 +11,9 @@ jobs:
     name: Build ISURU-POS-Setup.exe (Windows x64)
     runs-on: windows-latest
     timeout-minutes: 35
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     defaults:
       run:
         shell: bash
@@ -54,9 +57,11 @@ jobs:
           npm run build
 
       - name: Install Desktop Packaging Dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
         run: |
           cd desktop
-          npm install
+          npm ci || npm install
 
       - name: Download & Extract Portable Windows PostgreSQL 16
         shell: pwsh
