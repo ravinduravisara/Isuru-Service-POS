@@ -96,6 +96,34 @@ jobs:
           cd backend
           npm prune --omit=dev
 
+      - name: Pre-cache Windows Electron Binary
+        shell: pwsh
+        run: |
+          $electronVersion = "33.2.1"
+          $zipName = "electron-v$electronVersion-win32-x64.zip"
+          $url = "https://github.com/electron/electron/releases/download/v$electronVersion/$zipName"
+          $caches = @(
+            "$env:LOCALAPPDATA\electron\Cache",
+            "$env:LOCALAPPDATA\electron-builder\Cache\electron",
+            "$HOME\.cache\electron"
+          )
+          foreach ($dir in $caches) {
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          }
+          $target = "$env:LOCALAPPDATA\electron\Cache\$zipName"
+          if (!(Test-Path $target)) {
+            Write-Host "Pre-downloading Electron $electronVersion to $target..."
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+            Invoke-WebRequest -Uri $url -OutFile $target
+          }
+          foreach ($dir in $caches) {
+            $dest = Join-Path $dir $zipName
+            if (!(Test-Path $dest)) {
+              Copy-Item $target $dest -Force
+            }
+          }
+          Write-Host "✔ Electron binary cached at: $target"
+
       - name: Package Windows NSIS Installer (electron-builder)
         run: |
           cd desktop
