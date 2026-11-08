@@ -14,7 +14,8 @@ export type OutboxEntityType =
   | 'STOCK_MOVEMENT'
   | 'SUPPLY_INVOICE'
   | 'SETTLEMENT'
-  | 'SETTING';
+  | 'SETTING'
+  | 'SUPPLIER';
 
 export type OutboxOperationType = 'CREATE' | 'UPDATE' | 'DELETE';
 

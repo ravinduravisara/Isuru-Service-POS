@@ -341,13 +341,14 @@ synchronous_commit = on
       ? path.join(process.resourcesPath, 'backend', 'prisma')
       : path.join(__dirname, '..', '..', '..', 'backend', 'prisma');
 
-    // Quick verification: If core tables already exist AND seed user exists, skip redundant re-runs
+    // Quick verification: If core tables already exist AND seed user & products exist, skip redundant re-runs
     try {
       const tableCheck = await runPsql('isuru_pos', "SELECT to_regclass('public.users');");
       if (tableCheck && tableCheck.includes('users')) {
-        const isuruCheck = await runPsql('isuru_pos', "SELECT count(*) FROM users WHERE username = 'Isuru@6800';");
-        if (isuruCheck && parseInt(isuruCheck, 10) > 0) {
-          console.log('[ProcessManager] Database tables and production accounts verified.');
+        const isuruCheck = await runPsql('isuru_pos', "SELECT count(*) FROM users WHERE LOWER(username) = 'isuru@6800';");
+        const prodCheck = await runPsql('isuru_pos', "SELECT count(*) FROM products;");
+        if (isuruCheck && parseInt(isuruCheck, 10) > 0 && prodCheck && parseInt(prodCheck, 10) > 0) {
+          console.log('[ProcessManager] Database tables, production accounts, and catalog verified.');
           onProgress?.('Local database verified.');
           return;
         }
@@ -438,6 +439,7 @@ synchronous_commit = on
       CORS_ORIGIN: `http://127.0.0.1:${this.backendPort},http://localhost:${this.backendPort},http://localhost:5173,http://localhost:8081,https://88.222.242.20:8443`,
       POS_ROLE: 'LOCAL_PRIMARY',
       CLOUD_SYNC_ENABLED: 'true',
+      CLOUD_DATABASE_URL: process.env.CLOUD_DATABASE_URL || 'postgresql://neondb_owner:npg_C4W3bIOTtwLK@ep-ancient-fire-a1avc551.ap-southeast-1.aws.neon.tech/isuru_pos?sslmode=require',
       POS_DEVICE_ID: 'pos-main',
     };
 

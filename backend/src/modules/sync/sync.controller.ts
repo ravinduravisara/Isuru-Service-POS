@@ -6,6 +6,295 @@ import { prisma } from '../../config/prisma.js';
 import { runSyncCycle, getSyncWorkerStatus } from '../../services/sync-worker.service.js';
 
 /**
+ * Atomically apply a single sync operation to a given PostgreSQL database transaction client.
+ * Reusable by both HTTP outbox push and direct Neon Cloud synchronization.
+ */
+export async function applyOperationToDatabase(
+  tx: any,
+  op: {
+    operationId: string;
+    entityType: string;
+    operationType: string;
+    payload: any;
+    idempotencyKey?: string;
+  },
+  deviceId = 'pos-main'
+): Promise<string> {
+  const { operationId, entityType, operationType, payload, idempotencyKey } = op;
+  const opKey = idempotencyKey || operationId;
+
+  if (entityType === 'INVOICE') {
+    if (operationType === 'CREATE') {
+      const {
+        clientTxId,
+        billNo: requestedBillNo,
+        customerId: inputCustomerId,
+        customerName = 'Walk-in Customer',
+        customerPhone = '',
+        vehicleId: inputVehicleId,
+        vehicleNo = 'UNKNOWN',
+        vehicleType = 'Others',
+        dateTime,
+        subtotalAmount = 0,
+        discountAmount = 0,
+        totalAmount = 0,
+        paymentMethod = 'Cash',
+        paymentStatus = 'Paid',
+        items = [],
+      } = payload;
+
+      // Check if invoice already exists
+      const existingInvoice = clientTxId
+        ? await tx.invoice.findUnique({ where: { clientTxId } })
+        : null;
+
+      if (existingInvoice) {
+        return `Invoice ${existingInvoice.billNo} already exists`;
+      }
+
+      // Resolve Customer
+      let customer = inputCustomerId
+        ? await tx.customer.findUnique({ where: { id: inputCustomerId } })
+        : null;
+      if (!customer && customerName) {
+        customer = await tx.customer.findFirst({
+          where: {
+            name: customerName.trim(),
+            ...(customerPhone && { phone: customerPhone.trim() }),
+          },
+        });
+        if (!customer) {
+          customer = await tx.customer.create({
+            data: {
+              name: customerName.trim(),
+              phone: customerPhone.trim(),
+            },
+          });
+        }
+      }
+
+      // Resolve Vehicle
+      let vehicle = inputVehicleId
+        ? await tx.vehicle.findUnique({ where: { id: inputVehicleId } })
+        : null;
+      if (!vehicle && customer && vehicleNo) {
+        vehicle = await tx.vehicle.findFirst({
+          where: {
+            customerId: customer.id,
+            vehicleNo: vehicleNo.trim().toUpperCase(),
+          },
+        });
+        if (!vehicle) {
+          vehicle = await tx.vehicle.create({
+            data: {
+              customerId: customer.id,
+              vehicleNo: vehicleNo.trim().toUpperCase(),
+              vehicleType: vehicleType || 'Others',
+            },
+          });
+        }
+      }
+
+      // Collision-free Bill Number allocation
+      let finalBillNo = requestedBillNo;
+      if (!finalBillNo || (await tx.invoice.findUnique({ where: { billNo: finalBillNo } }))) {
+        const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+        const prefix = `INV-${dateStr}`;
+        let candidateNum = 1;
+        finalBillNo = `${prefix}-${String(candidateNum).padStart(4, '0')}`;
+        while (await tx.invoice.findUnique({ where: { billNo: finalBillNo } })) {
+          candidateNum++;
+          finalBillNo = `${prefix}-${String(candidateNum).padStart(4, '0')}`;
+        }
+      }
+
+      // Deduct stock for line items
+      const processedItems: any[] = [];
+      for (const rawItem of items) {
+        const qty = Math.max(0, Number(rawItem.qty) || 1);
+        const rate = Math.max(0, Number(rawItem.rate) || 0);
+        const amount = Math.round(qty * rate * 100) / 100;
+        const itemId = (rawItem.itemId || '').trim().toUpperCase();
+        const description = (rawItem.description || '').trim();
+        let buyingPrice = 0;
+
+        if (itemId) {
+          let lockedProducts: any[] = await tx.$queryRaw`
+            SELECT id, "itemId", quantity, "buyingPrice", "supplierCode"
+            FROM products
+            WHERE "itemId" = ${itemId}
+            FOR UPDATE
+          `;
+
+          if (lockedProducts.length === 0) {
+            lockedProducts = await tx.$queryRaw`
+              SELECT id, "itemId", quantity, "buyingPrice", "supplierCode"
+              FROM products
+              WHERE UPPER("itemId") LIKE ${'%' + itemId + '%'}
+              ORDER BY LENGTH("itemId") ASC
+              LIMIT 1
+              FOR UPDATE
+            `;
+          }
+
+          if (lockedProducts.length > 0) {
+            const product = lockedProducts[0];
+            buyingPrice = Number(product.buyingPrice) || 0;
+
+            await tx.product.update({
+              where: { id: product.id },
+              data: { quantity: { decrement: qty } },
+            });
+
+            await tx.stockMovement.create({
+              data: {
+                itemId: product.itemId,
+                supplierCode: product.supplierCode || '',
+                quantity: -qty,
+                unitPrice: rate,
+                buyingPrice,
+                paymentMethod,
+                movedAt: dateTime ? new Date(dateTime) : new Date(),
+              },
+            });
+          }
+        }
+
+        processedItems.push({
+          service: rawItem.service || description || 'Service / Labour',
+          itemId,
+          description,
+          qty,
+          rate,
+          amount,
+          buyingPrice,
+        });
+      }
+
+      // Create invoice
+      await tx.invoice.create({
+        data: {
+          clientTxId: clientTxId || opKey,
+          billNo: finalBillNo,
+          isProvisional: false,
+          syncedAt: new Date(),
+          customerId: customer?.id,
+          customerName: (customerName || 'Walk-in').trim(),
+          customerPhone: (customerPhone || '').trim(),
+          vehicleId: vehicle?.id,
+          vehicleNo: (vehicleNo || 'UNKNOWN').trim().toUpperCase(),
+          vehicleType,
+          dateTime: dateTime ? new Date(dateTime) : new Date(),
+          subtotalAmount: Number(subtotalAmount) || 0,
+          discountAmount: Number(discountAmount) || 0,
+          totalAmount: Number(totalAmount) || 0,
+          paymentMethod,
+          paymentStatus,
+          items: {
+            create: processedItems,
+          },
+        },
+      });
+
+      return `Invoice ${finalBillNo} synced successfully.`;
+    } else if (operationType === 'UPDATE') {
+      const { id, paymentStatus, paymentSettledAt } = payload;
+      if (id) {
+        await tx.invoice.update({
+          where: { id },
+          data: {
+            paymentStatus,
+            paymentSettledAt: paymentSettledAt ? new Date(paymentSettledAt) : new Date(),
+          },
+        });
+        return `Invoice ${id} settlement updated.`;
+      }
+    } else if (operationType === 'DELETE') {
+      const { id } = payload;
+      if (id) {
+        await tx.invoice.deleteMany({ where: { id } });
+        return `Invoice ${id} deleted.`;
+      }
+    }
+  } else if (entityType === 'CUSTOMER') {
+    const { name, phone = '', nic = '', bankDetails = '' } = payload;
+    if (name) {
+      const cleanPhone = phone.trim();
+      let cust = cleanPhone ? await tx.customer.findFirst({ where: { phone: cleanPhone } }) : null;
+      if (cust) {
+        await tx.customer.update({
+          where: { id: cust.id },
+          data: { name: name.trim(), nic: nic.trim(), bankDetails: bankDetails.trim() },
+        });
+      } else {
+        await tx.customer.create({
+          data: { name: name.trim(), phone: cleanPhone, nic: nic.trim(), bankDetails: bankDetails.trim() },
+        });
+      }
+      return `Customer ${name} synced.`;
+    }
+  } else if (entityType === 'PRODUCT') {
+    const { itemId, itemName, brand = '', quantity = 0, unitPrice = 0, buyingPrice = 0, supplierCode = '', paymentMethod = 'Cash' } = payload;
+    if (itemId) {
+      await tx.product.upsert({
+        where: { itemId: itemId.trim().toUpperCase() },
+        update: { itemName, brand, quantity: Number(quantity), unitPrice, buyingPrice, supplierCode, paymentMethod },
+        create: { itemId: itemId.trim().toUpperCase(), itemName, brand, quantity: Number(quantity), unitPrice, buyingPrice, supplierCode, paymentMethod },
+      });
+      return `Product ${itemId} synced.`;
+    }
+  } else if (entityType === 'SERVICE') {
+    const { category = 'Others', name, price = 0, description = '' } = payload;
+    if (name) {
+      const existing = await tx.service.findFirst({ where: { category, name } });
+      if (existing) {
+        await tx.service.update({ where: { id: existing.id }, data: { price, description } });
+      } else {
+        await tx.service.create({ data: { category, name, price, description } });
+      }
+      return `Service ${category} / ${name} synced.`;
+    }
+  } else if (entityType === 'SETTING') {
+    const { key, value } = payload;
+    if (key && value !== undefined) {
+      await tx.setting.upsert({
+        where: { key },
+        update: { value: String(value) },
+        create: { key, value: String(value) },
+      });
+      return `Setting ${key} synced.`;
+    }
+  } else if (entityType === 'SUPPLIER') {
+    const { supplierCode, name, contact = '', invoice = '' } = payload;
+    if (supplierCode) {
+      await tx.supplier.upsert({
+        where: { supplierCode },
+        update: { name, contact, invoice },
+        create: { supplierCode, name, contact, invoice },
+      });
+      return `Supplier ${supplierCode} synced.`;
+    }
+  } else if (entityType === 'SUPPLY_INVOICE') {
+    const { invoiceNo, supplierCode, itemId, buyingPrice = 0, quantity = 0, paymentStatus = 'Cash' } = payload;
+    if (invoiceNo && supplierCode && itemId) {
+      await tx.supplyInvoice.create({
+        data: {
+          invoiceNo,
+          supplierCode,
+          itemId,
+          buyingPrice,
+          quantity,
+          paymentStatus,
+        },
+      });
+      return `Supply Invoice ${invoiceNo} synced.`;
+    }
+  }
+
+  return `Operation ${entityType}:${operationType} accepted.`;
+}
+
+/**
  * Handle batch push of outbox operations from local POS to cloud database.
  * Completely idempotent: duplicate operationIds / idempotencyKeys return existing acks.
  */
@@ -46,255 +335,7 @@ export async function pushOutbox(req: Request, res: Response, next: NextFunction
 
         // 2. Process entity operation atomically
         const ack = await prisma.$transaction(async (tx) => {
-          let conflictMsg: string | null = null;
-
-          if (entityType === 'INVOICE') {
-            if (operationType === 'CREATE') {
-              const {
-                clientTxId,
-                billNo: requestedBillNo,
-                customerId: inputCustomerId,
-                customerName = 'Walk-in Customer',
-                customerPhone = '',
-                vehicleId: inputVehicleId,
-                vehicleNo = 'UNKNOWN',
-                vehicleType = 'Others',
-                dateTime,
-                subtotalAmount = 0,
-                discountAmount = 0,
-                totalAmount = 0,
-                paymentMethod = 'Cash',
-                paymentStatus = 'Paid',
-                items = [],
-              } = payload;
-
-              // Check if invoice already exists
-              const existingInvoice = clientTxId
-                ? await tx.invoice.findUnique({ where: { clientTxId } })
-                : null;
-
-              if (existingInvoice) {
-                return `Invoice ${existingInvoice.billNo} already exists`;
-              }
-
-              // Resolve Customer
-              let customer = inputCustomerId
-                ? await tx.customer.findUnique({ where: { id: inputCustomerId } })
-                : null;
-              if (!customer && customerName) {
-                customer = await tx.customer.findFirst({
-                  where: {
-                    name: customerName.trim(),
-                    ...(customerPhone && { phone: customerPhone.trim() }),
-                  },
-                });
-                if (!customer) {
-                  customer = await tx.customer.create({
-                    data: {
-                      name: customerName.trim(),
-                      phone: customerPhone.trim(),
-                    },
-                  });
-                }
-              }
-
-              // Resolve Vehicle
-              let vehicle = inputVehicleId
-                ? await tx.vehicle.findUnique({ where: { id: inputVehicleId } })
-                : null;
-              if (!vehicle && customer && vehicleNo) {
-                vehicle = await tx.vehicle.findFirst({
-                  where: {
-                    customerId: customer.id,
-                    vehicleNo: vehicleNo.trim().toUpperCase(),
-                  },
-                });
-                if (!vehicle) {
-                  vehicle = await tx.vehicle.create({
-                    data: {
-                      customerId: customer.id,
-                      vehicleNo: vehicleNo.trim().toUpperCase(),
-                      vehicleType: vehicleType || 'Others',
-                    },
-                  });
-                }
-              }
-
-              // Collision-free Bill Number allocation
-              let finalBillNo = requestedBillNo;
-              if (!finalBillNo || (await tx.invoice.findUnique({ where: { billNo: finalBillNo } }))) {
-                const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-                const prefix = `INV-${dateStr}`;
-                let candidateNum = 1;
-                finalBillNo = `${prefix}-${String(candidateNum).padStart(4, '0')}`;
-                while (await tx.invoice.findUnique({ where: { billNo: finalBillNo } })) {
-                  candidateNum++;
-                  finalBillNo = `${prefix}-${String(candidateNum).padStart(4, '0')}`;
-                }
-              }
-
-              // Deduct stock for line items
-              const processedItems: any[] = [];
-              const stockConflicts: string[] = [];
-
-              for (const rawItem of items) {
-                const qty = Math.max(0, Number(rawItem.qty) || 1);
-                const rate = Math.max(0, Number(rawItem.rate) || 0);
-                const amount = Math.round(qty * rate * 100) / 100;
-                const itemId = (rawItem.itemId || '').trim().toUpperCase();
-                const description = (rawItem.description || '').trim();
-                let buyingPrice = 0;
-
-                if (itemId) {
-                  let lockedProducts: any[] = await tx.$queryRaw`
-                    SELECT id, "itemId", quantity, "buyingPrice", "supplierCode"
-                    FROM products
-                    WHERE "itemId" = ${itemId}
-                    FOR UPDATE
-                  `;
-
-                  if (lockedProducts.length === 0) {
-                    lockedProducts = await tx.$queryRaw`
-                      SELECT id, "itemId", quantity, "buyingPrice", "supplierCode"
-                      FROM products
-                      WHERE UPPER("itemId") LIKE ${'%' + itemId + '%'}
-                      ORDER BY LENGTH("itemId") ASC
-                      LIMIT 1
-                      FOR UPDATE
-                    `;
-                  }
-
-                  if (lockedProducts.length > 0) {
-                    const product = lockedProducts[0];
-                    const availableQty = Number(product.quantity);
-                    buyingPrice = Number(product.buyingPrice) || 0;
-
-                    if (availableQty < qty) {
-                      stockConflicts.push(
-                        `Part "${product.itemId}": offline sold ${qty}, cloud had ${availableQty}. Adjusted.`
-                      );
-                    }
-
-                    await tx.product.update({
-                      where: { id: product.id },
-                      data: { quantity: { decrement: qty } },
-                    });
-
-                    await tx.stockMovement.create({
-                      data: {
-                        itemId: product.itemId,
-                        supplierCode: product.supplierCode || '',
-                        quantity: -qty,
-                        unitPrice: rate,
-                        buyingPrice,
-                        paymentMethod,
-                        movedAt: dateTime ? new Date(dateTime) : new Date(),
-                      },
-                    });
-                  }
-                }
-
-                processedItems.push({
-                  service: rawItem.service || description || 'Service / Labour',
-                  itemId,
-                  description,
-                  qty,
-                  rate,
-                  amount,
-                  buyingPrice,
-                });
-              }
-
-              if (stockConflicts.length > 0) {
-                conflictMsg = stockConflicts.join('; ');
-              }
-
-              // Create invoice
-              await tx.invoice.create({
-                data: {
-                  clientTxId: clientTxId || opKey,
-                  billNo: finalBillNo,
-                  isProvisional: false,
-                  syncedAt: new Date(),
-                  customerId: customer?.id,
-                  customerName: (customerName || 'Walk-in').trim(),
-                  customerPhone: (customerPhone || '').trim(),
-                  vehicleId: vehicle?.id,
-                  vehicleNo: (vehicleNo || 'UNKNOWN').trim().toUpperCase(),
-                  vehicleType,
-                  dateTime: dateTime ? new Date(dateTime) : new Date(),
-                  subtotalAmount: Number(subtotalAmount) || 0,
-                  discountAmount: Number(discountAmount) || 0,
-                  totalAmount: Number(totalAmount) || 0,
-                  paymentMethod,
-                  paymentStatus,
-                  items: {
-                    create: processedItems,
-                  },
-                },
-              });
-
-              return `Invoice ${finalBillNo} synced successfully.`;
-            } else if (operationType === 'UPDATE') {
-              const { id, paymentStatus, paymentSettledAt } = payload;
-              if (id) {
-                await tx.invoice.update({
-                  where: { id },
-                  data: {
-                    paymentStatus,
-                    paymentSettledAt: paymentSettledAt ? new Date(paymentSettledAt) : new Date(),
-                  },
-                });
-                return `Invoice ${id} settlement updated.`;
-              }
-            } else if (operationType === 'DELETE') {
-              const { id } = payload;
-              if (id) {
-                await tx.invoice.deleteMany({ where: { id } });
-                return `Invoice ${id} deleted.`;
-              }
-            }
-          } else if (entityType === 'CUSTOMER') {
-            const { name, phone = '', nic = '', bankDetails = '' } = payload;
-            if (name) {
-              const cleanPhone = phone.trim();
-              let cust = cleanPhone ? await tx.customer.findFirst({ where: { phone: cleanPhone } }) : null;
-              if (cust) {
-                await tx.customer.update({
-                  where: { id: cust.id },
-                  data: { name: name.trim(), nic: nic.trim(), bankDetails: bankDetails.trim() },
-                });
-              } else {
-                await tx.customer.create({
-                  data: { name: name.trim(), phone: cleanPhone, nic: nic.trim(), bankDetails: bankDetails.trim() },
-                });
-              }
-              return `Customer ${name} synced.`;
-            }
-          } else if (entityType === 'PRODUCT') {
-            const { itemId, itemName, brand = '', quantity = 0, unitPrice = 0, buyingPrice = 0, supplierCode = '', paymentMethod = 'Cash' } = payload;
-            if (itemId) {
-              await tx.product.upsert({
-                where: { itemId: itemId.trim().toUpperCase() },
-                update: { itemName, brand, quantity: Number(quantity), unitPrice, buyingPrice, supplierCode, paymentMethod },
-                create: { itemId: itemId.trim().toUpperCase(), itemName, brand, quantity: Number(quantity), unitPrice, buyingPrice, supplierCode, paymentMethod },
-              });
-              return `Product ${itemId} synced.`;
-            }
-          } else if (entityType === 'SERVICE') {
-            const { category = 'Others', name, price = 0, description = '' } = payload;
-            if (name) {
-              const existing = await tx.service.findFirst({ where: { category, name } });
-              if (existing) {
-                await tx.service.update({ where: { id: existing.id }, data: { price, description } });
-              } else {
-                await tx.service.create({ data: { category, name, price, description } });
-              }
-              return `Service ${category} / ${name} synced.`;
-            }
-          }
-
-          return `Operation ${entityType}:${operationType} accepted.`;
+          return await applyOperationToDatabase(tx, op, deviceId);
         });
 
         // Record audit entry in sync_operations
@@ -623,8 +664,15 @@ export async function syncInvoice(req: Request, res: Response, next: NextFunctio
         include: { items: true },
       });
 
-      await tx.syncOperation.create({
-        data: {
+      await tx.syncOperation.upsert({
+        where: { clientOpId: clientTxId },
+        update: {
+          status: stockConflicts.length > 0 ? 'CONFLICT' : 'APPLIED',
+          response: JSON.stringify({ billNo: finalBillNo, provisionalBillNo }),
+          errorMessage: stockConflicts.length > 0 ? stockConflicts.join('; ') : null,
+          appliedAt: now,
+        },
+        create: {
           clientOpId: clientTxId,
           deviceId: (req.headers['x-device-id'] as string) || 'pos-main',
           operationType: 'CREATE_INVOICE',

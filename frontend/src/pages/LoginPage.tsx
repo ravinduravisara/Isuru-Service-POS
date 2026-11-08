@@ -141,7 +141,7 @@ export const LoginPage: React.FC = () => {
               <ShieldCheck className="w-3.5 h-3.5 text-blue-400 group-hover:scale-110 transition-transform" />
               <div className="text-left">
                 <span className="font-semibold block leading-none">Admin</span>
-                <span className="text-[10px] text-slate-500">Full Rights</span>
+                <span className="text-[10px] text-slate-500">Full Rights (Isuru@6800)</span>
               </div>
             </button>
 
@@ -153,7 +153,7 @@ export const LoginPage: React.FC = () => {
               <UserCheck className="w-3.5 h-3.5 text-emerald-400 group-hover:scale-110 transition-transform" />
               <div className="text-left">
                 <span className="font-semibold block leading-none">Staff</span>
-                <span className="text-[10px] text-slate-500">Billing Only</span>
+                <span className="text-[10px] text-slate-500">Billing Only (User@123)</span>
               </div>
             </button>
           </div>

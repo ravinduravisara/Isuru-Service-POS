@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { prisma } from '../../config/prisma.js';
+import { recordOutboxOperation } from '../../services/outbox.service.js';
 
 export async function getSuppliers(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -93,13 +94,31 @@ export async function createSupplier(req: Request, res: Response, next: NextFunc
       finalCode = `SUP-${String(nextNum).padStart(4, '0')}`;
     }
 
-    const supplier = await prisma.supplier.create({
-      data: {
-        supplierCode: finalCode,
-        name: name.trim(),
-        contact: contact.trim(),
-        invoice: invoice.trim(),
-      },
+    const supplier = await prisma.$transaction(async (tx) => {
+      const created = await tx.supplier.create({
+        data: {
+          supplierCode: finalCode,
+          name: name.trim(),
+          contact: contact.trim(),
+          invoice: invoice.trim(),
+        },
+      });
+
+      await recordOutboxOperation(tx, {
+        entityType: 'SUPPLIER' as any,
+        entityId: created.id,
+        operationType: 'CREATE',
+        idempotencyKey: `sup-${created.id}`,
+        payload: {
+          id: created.id,
+          supplierCode: created.supplierCode,
+          name: created.name,
+          contact: created.contact,
+          invoice: created.invoice,
+        },
+      });
+
+      return created;
     });
 
     res.status(201).json({

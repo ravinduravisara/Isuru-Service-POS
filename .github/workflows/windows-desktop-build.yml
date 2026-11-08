@@ -65,8 +65,18 @@ jobs:
           npm config set fetch-retries 5
           npm config set fetch-retry-mintimeout 20000
           npm config set fetch-retry-maxtimeout 120000
+          for attempt in 1 2 3; do
+            echo "Attempt $attempt: Installing desktop dependencies..."
+            (cd desktop && (npm ci || npm install)) && break || {
+              echo "Desktop install failed on attempt $attempt. Retrying in 5 seconds..."
+              sleep 5
+            }
+          done
+
+      - name: Compile Electron Main Process
+        run: |
           cd desktop
-          npm ci || npm install
+          npm run build:electron
 
       - name: Download & Extract Portable Windows PostgreSQL 16
         shell: pwsh
@@ -79,15 +89,24 @@ jobs:
           for ($attempt = 1; $attempt -le 3; $attempt++) {
             try {
               Write-Host "Attempt $attempt of 3: Downloading PostgreSQL 16 binaries..."
-              Invoke-WebRequest -Uri "https://get.enterprisedb.com/postgresql/postgresql-16.6-1-windows-x64-binaries.zip" -OutFile $zipPath -TimeoutSec 300
+              curl.exe -fSL --retry 3 --retry-delay 5 --connect-timeout 30 -m 300 -o $zipPath "https://get.enterprisedb.com/postgresql/postgresql-16.6-1-windows-x64-binaries.zip"
               if ((Test-Path $zipPath) -and ((Get-Item $zipPath).Length -gt 50MB)) {
                 $downloaded = $true
                 break
               }
             } catch {
-              Write-Warning "Attempt $attempt failed: $_"
-              Start-Sleep -Seconds 3
+              Write-Warning "curl attempt $attempt failed, trying Invoke-WebRequest: $_"
+              try {
+                Invoke-WebRequest -Uri "https://get.enterprisedb.com/postgresql/postgresql-16.6-1-windows-x64-binaries.zip" -OutFile $zipPath -TimeoutSec 300
+                if ((Test-Path $zipPath) -and ((Get-Item $zipPath).Length -gt 50MB)) {
+                  $downloaded = $true
+                  break
+                }
+              } catch {
+                Write-Warning "Invoke-WebRequest attempt $attempt failed: $_"
+              }
             }
+            Start-Sleep -Seconds 3
           }
           if (-not $downloaded) {
             Write-Error "Failed to download PostgreSQL binaries after 3 attempts"
@@ -107,10 +126,9 @@ jobs:
           }
           Write-Host "✔ PostgreSQL 16 successfully verified at desktop/windows/postgres/pgsql/bin/postgres.exe"
 
-      - name: Compile Electron Main Process & Pre-build Staging
+      - name: Pre-build Staging
         run: |
           cd desktop
-          npm run build:electron
           node scripts/prepare-build.mjs
 
       - name: Prune Backend Dev Dependencies for Production Packaging
@@ -124,9 +142,10 @@ jobs:
           $electronVersion = "33.2.1"
           $zipName = "electron-v$electronVersion-win32-x64.zip"
           $urls = @(
+            "https://github.com/electron/electron/releases/download/v$electronVersion/$zipName",
+            "https://artifacts.electronjs.org/headers/dist/v$electronVersion/$zipName",
             "https://cdn.npmmirror.com/binaries/electron/v$electronVersion/$zipName",
-            "https://npmmirror.com/mirrors/electron/v$electronVersion/$zipName",
-            "https://github.com/electron/electron/releases/download/v$electronVersion/$zipName"
+            "https://npmmirror.com/mirrors/electron/v$electronVersion/$zipName"
           )
           $caches = @(
             "$env:LOCALAPPDATA\electron\Cache",
@@ -143,35 +162,52 @@ jobs:
           foreach ($url in $urls) {
             Write-Host "Attempting Electron binary download from: $url"
             try {
-              Invoke-WebRequest -Uri $url -OutFile $target -TimeoutSec 180
+              curl.exe -fSL --retry 3 --retry-delay 3 --connect-timeout 20 -m 180 -o $target $url
               if ((Test-Path $target) -and ((Get-Item $target).Length -gt 50MB)) {
                 $downloaded = $true
                 Write-Host "✔ Successfully downloaded $zipName ($((Get-Item $target).Length) bytes)"
                 break
               }
             } catch {
-              Write-Warning "Download attempt failed from $url : $_"
+              Write-Warning "curl download attempt failed from $url : $_"
+            }
+            if (-not $downloaded) {
+              try {
+                Invoke-WebRequest -Uri $url -OutFile $target -TimeoutSec 180
+                if ((Test-Path $target) -and ((Get-Item $target).Length -gt 50MB)) {
+                  $downloaded = $true
+                  Write-Host "✔ Successfully downloaded $zipName ($((Get-Item $target).Length) bytes) via Invoke-WebRequest"
+                  break
+                }
+              } catch {
+                Write-Warning "Invoke-WebRequest attempt failed from $url : $_"
+              }
             }
           }
           if (-not $downloaded) {
-            Write-Error "Failed to download Electron binary from all mirror sources."
-            exit 1
+            Write-Warning "Could not pre-download Electron binary; electron-builder will perform download automatically."
           }
 
           # Also download SHASUMS256.txt for verification
           $shasumTarget = "$env:LOCALAPPDATA\electron\Cache\SHASUMS256.txt"
           try {
-            Invoke-WebRequest -Uri "https://npmmirror.com/mirrors/electron/v$electronVersion/SHASUMS256.txt" -OutFile $shasumTarget -TimeoutSec 30
-          } catch {}
+            curl.exe -fSL --connect-timeout 15 -m 30 -o $shasumTarget "https://github.com/electron/electron/releases/download/v$electronVersion/SHASUMS256.txt"
+          } catch {
+            try {
+              Invoke-WebRequest -Uri "https://npmmirror.com/mirrors/electron/v$electronVersion/SHASUMS256.txt" -OutFile $shasumTarget -TimeoutSec 30
+            } catch {}
+          }
 
           # Replicate to all cache directories
-          foreach ($dir in $caches) {
-            $dest = Join-Path $dir $zipName
-            if (!(Test-Path $dest)) {
-              Copy-Item $target $dest -Force
-            }
-            if (Test-Path $shasumTarget) {
-              Copy-Item $shasumTarget (Join-Path $dir "SHASUMS256.txt") -Force -ErrorAction SilentlyContinue
+          if (Test-Path $target) {
+            foreach ($dir in $caches) {
+              $dest = Join-Path $dir $zipName
+              if (!(Test-Path $dest)) {
+                Copy-Item $target $dest -Force
+              }
+              if (Test-Path $shasumTarget) {
+                Copy-Item $shasumTarget (Join-Path $dir "SHASUMS256.txt") -Force -ErrorAction SilentlyContinue
+              }
             }
           }
 
@@ -180,12 +216,21 @@ jobs:
           $wcsTargetDir = "$wcsDir\winCodeSign-2.6.0"
           New-Item -ItemType Directory -Force -Path $wcsTargetDir | Out-Null
           $wcs7z = "$wcsDir\winCodeSign-2.6.0.7z"
-          try {
-            Invoke-WebRequest -Uri "https://npmmirror.com/mirrors/electron-builder-binaries/winCodeSign-2.6.0/winCodeSign-2.6.0.7z" -OutFile $wcs7z -TimeoutSec 60
-            & "7z" x $wcs7z "-o$wcsTargetDir" -y | Out-Null
-            Write-Host "✔ winCodeSign pre-cached and unpacked at: $wcsTargetDir"
-          } catch {
-            Write-Warning "winCodeSign pre-cache warning: $_"
+          $wcsUrls = @(
+            "https://github.com/electron-userland/electron-builder-binaries/releases/download/winCodeSign-2.6.0/winCodeSign-2.6.0.7z",
+            "https://npmmirror.com/mirrors/electron-builder-binaries/winCodeSign-2.6.0/winCodeSign-2.6.0.7z"
+          )
+          foreach ($wUrl in $wcsUrls) {
+            try {
+              curl.exe -fSL --retry 2 --connect-timeout 15 -m 60 -o $wcs7z $wUrl
+              if (Test-Path $wcs7z) {
+                & "7z" x $wcs7z "-o$wcsTargetDir" -y | Out-Null
+                Write-Host "✔ winCodeSign pre-cached and unpacked at: $wcsTargetDir"
+                break
+              }
+            } catch {
+              Write-Warning "winCodeSign pre-cache attempt from $wUrl failed: $_"
+            }
           }
 
           # Pre-cache nsis-3.0.4.1
@@ -193,24 +238,42 @@ jobs:
           $nsisTargetDir = "$nsisDir\nsis-3.0.4.1"
           New-Item -ItemType Directory -Force -Path $nsisTargetDir | Out-Null
           $nsis7z = "$nsisDir\nsis-3.0.4.1.7z"
-          try {
-            Invoke-WebRequest -Uri "https://npmmirror.com/mirrors/electron-builder-binaries/nsis-3.0.4.1/nsis-3.0.4.1.7z" -OutFile $nsis7z -TimeoutSec 60
-            & "7z" x $nsis7z "-o$nsisTargetDir" -y | Out-Null
-            Write-Host "✔ nsis pre-cached and unpacked at: $nsisTargetDir"
-          } catch {
-            Write-Warning "nsis pre-cache warning: $_"
+          $nsisUrls = @(
+            "https://github.com/electron-userland/electron-builder-binaries/releases/download/nsis-3.0.4.1/nsis-3.0.4.1.7z",
+            "https://npmmirror.com/mirrors/electron-builder-binaries/nsis-3.0.4.1/nsis-3.0.4.1.7z"
+          )
+          foreach ($nUrl in $nsisUrls) {
+            try {
+              curl.exe -fSL --retry 2 --connect-timeout 15 -m 60 -o $nsis7z $nUrl
+              if (Test-Path $nsis7z) {
+                & "7z" x $nsis7z "-o$nsisTargetDir" -y | Out-Null
+                Write-Host "✔ nsis pre-cached and unpacked at: $nsisTargetDir"
+                break
+              }
+            } catch {
+              Write-Warning "nsis pre-cache attempt from $nUrl failed: $_"
+            }
           }
 
           # Pre-cache nsis-resources-3.4.1
           $nsisResDir = "$env:LOCALAPPDATA\electron-builder\Cache\nsis\nsis-resources-3.4.1"
           New-Item -ItemType Directory -Force -Path $nsisResDir | Out-Null
           $nsisRes7z = "$env:LOCALAPPDATA\electron-builder\Cache\nsis\nsis-resources-3.4.1.7z"
-          try {
-            Invoke-WebRequest -Uri "https://npmmirror.com/mirrors/electron-builder-binaries/nsis-resources-3.4.1/nsis-resources-3.4.1.7z" -OutFile $nsisRes7z -TimeoutSec 60
-            & "7z" x $nsisRes7z "-o$nsisResDir" -y | Out-Null
-            Write-Host "✔ nsis-resources pre-cached and unpacked at: $nsisResDir"
-          } catch {
-            Write-Warning "nsis-resources pre-cache warning: $_"
+          $nsisResUrls = @(
+            "https://github.com/electron-userland/electron-builder-binaries/releases/download/nsis-resources-3.4.1/nsis-resources-3.4.1.7z",
+            "https://npmmirror.com/mirrors/electron-builder-binaries/nsis-resources-3.4.1/nsis-resources-3.4.1.7z"
+          )
+          foreach ($nrUrl in $nsisResUrls) {
+            try {
+              curl.exe -fSL --retry 2 --connect-timeout 15 -m 60 -o $nsisRes7z $nrUrl
+              if (Test-Path $nsisRes7z) {
+                & "7z" x $nsisRes7z "-o$nsisResDir" -y | Out-Null
+                Write-Host "✔ nsis-resources pre-cached and unpacked at: $nsisResDir"
+                break
+              }
+            } catch {
+              Write-Warning "nsis-resources pre-cache attempt from $nrUrl failed: $_"
+            }
           }
 
           Write-Host "✔ Electron binary and builder tools ready across all local caches."

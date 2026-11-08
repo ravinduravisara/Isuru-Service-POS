@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { prisma } from '../../config/prisma.js';
+import { recordOutboxOperation } from '../../services/outbox.service.js';
 
 export async function getSupplyInvoices(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -163,6 +164,23 @@ export async function createSupplyInvoice(req: Request, res: Response, next: Nex
           name: supCode,
           contact: '',
           invoice: invoiceNo.trim(),
+        },
+      });
+
+      // 6. Record outbox operation for cloud synchronization
+      await recordOutboxOperation(tx, {
+        entityType: 'SUPPLY_INVOICE',
+        entityId: supplyInvoice.id,
+        operationType: 'CREATE',
+        idempotencyKey: `sup-inv-${supplyInvoice.id}`,
+        payload: {
+          id: supplyInvoice.id,
+          invoiceNo: supplyInvoice.invoiceNo,
+          supplierCode: supplyInvoice.supplierCode,
+          itemId: supplyInvoice.itemId,
+          buyingPrice: Number(supplyInvoice.buyingPrice),
+          quantity: supplyInvoice.quantity,
+          paymentStatus: supplyInvoice.paymentStatus,
         },
       });
 
