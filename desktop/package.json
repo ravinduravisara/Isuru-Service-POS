@@ -12,6 +12,10 @@
   },
   "author": "ISURU Service Center",
   "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ravinduravisara/Isuru-Service-POS.git"
+  },
   "devDependencies": {
     "@types/node": "^22.10.7",
     "cross-env": "^7.0.3",

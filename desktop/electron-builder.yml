@@ -9,6 +9,11 @@ electronVersion: 33.2.1
 electronDownload:
   mirror: https://npmmirror.com/mirrors/electron/
 
+publish:
+  provider: github
+  owner: ravinduravisara
+  repo: Isuru-Service-POS
+
 npmRebuild: false
 nodeGypRebuild: false
 asar: true
