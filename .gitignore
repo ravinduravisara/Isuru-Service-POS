@@ -7,6 +7,9 @@ yarn-error.log*
 # Build outputs
 dist/
 build/
+dist-installer/
+desktop/dist-installer/
+builder-effective-config.yaml
 backend/dist/
 frontend/dist/
 .output/

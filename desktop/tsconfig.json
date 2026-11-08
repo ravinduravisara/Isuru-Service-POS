@@ -11,11 +11,12 @@
     "forceConsistentCasingInFileNames": true
   },
   "include": [
-    "electron/**/*",
-    "windows/**/*"
+    "electron/**/*"
   ],
   "exclude": [
     "node_modules",
-    "dist"
+    "dist",
+    "dist-installer",
+    "windows"
   ]
 }

@@ -68,6 +68,11 @@ jobs:
           Write-Host "Extracting PostgreSQL binaries..."
           Expand-Archive -Path $zipPath -DestinationPath "desktop/windows/postgres" -Force
           Remove-Item -Force $zipPath
+          # Remove unneeded GUI admin tools and docs to optimize package size
+          Remove-Item -Recurse -Force "desktop/windows/postgres/pgsql/pgAdmin 4" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "desktop/windows/postgres/pgsql/doc" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "desktop/windows/postgres/pgsql/symbols" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "desktop/windows/postgres/pgsql/include" -ErrorAction SilentlyContinue
           if (!(Test-Path "desktop/windows/postgres/pgsql/bin/postgres.exe")) {
             Write-Error "PostgreSQL extraction failed or postgres.exe was not found"
             exit 1
