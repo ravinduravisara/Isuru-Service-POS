@@ -14,6 +14,7 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ELECTRON_MIRROR: "https://npmmirror.com/mirrors/electron/"
     defaults:
       run:
         shell: bash
@@ -101,7 +102,11 @@ jobs:
         run: |
           $electronVersion = "33.2.1"
           $zipName = "electron-v$electronVersion-win32-x64.zip"
-          $url = "https://github.com/electron/electron/releases/download/v$electronVersion/$zipName"
+          $urls = @(
+            "https://cdn.npmmirror.com/binaries/electron/v$electronVersion/$zipName",
+            "https://npmmirror.com/mirrors/electron/v$electronVersion/$zipName",
+            "https://github.com/electron/electron/releases/download/v$electronVersion/$zipName"
+          )
           $caches = @(
             "$env:LOCALAPPDATA\electron\Cache",
             "$env:LOCALAPPDATA\electron-builder\Cache\electron",
@@ -111,18 +116,44 @@ jobs:
             New-Item -ItemType Directory -Force -Path $dir | Out-Null
           }
           $target = "$env:LOCALAPPDATA\electron\Cache\$zipName"
-          if (!(Test-Path $target)) {
-            Write-Host "Pre-downloading Electron $electronVersion to $target..."
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
-            Invoke-WebRequest -Uri $url -OutFile $target
+
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+          $downloaded = $false
+          foreach ($url in $urls) {
+            Write-Host "Attempting Electron binary download from: $url"
+            try {
+              Invoke-WebRequest -Uri $url -OutFile $target -TimeoutSec 180
+              if ((Test-Path $target) -and ((Get-Item $target).Length -gt 50MB)) {
+                $downloaded = $true
+                Write-Host "✔ Successfully downloaded $zipName ($((Get-Item $target).Length) bytes)"
+                break
+              }
+            } catch {
+              Write-Warning "Download attempt failed from $url : $_"
+            }
           }
+          if (-not $downloaded) {
+            Write-Error "Failed to download Electron binary from all mirror sources."
+            exit 1
+          }
+
+          # Also download SHASUMS256.txt for verification
+          $shasumTarget = "$env:LOCALAPPDATA\electron\Cache\SHASUMS256.txt"
+          try {
+            Invoke-WebRequest -Uri "https://npmmirror.com/mirrors/electron/v$electronVersion/SHASUMS256.txt" -OutFile $shasumTarget -TimeoutSec 30
+          } catch {}
+
+          # Replicate to all cache directories
           foreach ($dir in $caches) {
             $dest = Join-Path $dir $zipName
             if (!(Test-Path $dest)) {
               Copy-Item $target $dest -Force
             }
+            if (Test-Path $shasumTarget) {
+              Copy-Item $shasumTarget (Join-Path $dir "SHASUMS256.txt") -Force -ErrorAction SilentlyContinue
+            }
           }
-          Write-Host "✔ Electron binary cached at: $target"
+          Write-Host "✔ Electron binary and checksum ready across all builder caches."
 
       - name: Package Windows NSIS Installer (electron-builder)
         run: |

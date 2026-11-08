@@ -6,6 +6,9 @@ productName: ISURU Service POS
 copyright: Copyright © 2026 ISURU Service Center
 electronVersion: 33.2.1
 
+electronDownload:
+  mirror: https://npmmirror.com/mirrors/electron/
+
 npmRebuild: false
 nodeGypRebuild: false
 asar: true
