@@ -360,9 +360,11 @@ synchronous_commit = on
     const dataDir = this.getDataDirectory();
     const isPackaged = app.isPackaged;
 
-    const backendEntry = isPackaged
-      ? path.join(process.resourcesPath, 'backend', 'dist', 'server.js')
-      : path.join(__dirname, '..', '..', '..', 'backend', 'dist', 'server.js');
+    const backendDir = isPackaged
+      ? path.join(process.resourcesPath, 'backend')
+      : path.resolve(__dirname, '..', '..', '..', 'backend');
+
+    const backendEntry = path.join(backendDir, 'dist', 'server.js');
 
     // In Electron, process.execPath is the Electron executable.
     // Setting ELECTRON_RUN_AS_NODE=1 makes it run exactly as Node.js without needing a separate node.exe!
@@ -390,7 +392,11 @@ synchronous_commit = on
     const logFd = fs.openSync(logFile, 'a');
 
     this.backendProcess = spawn(nodeRuntime, [backendEntry], {
-      env,
+      cwd: backendDir,
+      env: {
+        ...env,
+        NODE_PATH: path.join(backendDir, 'node_modules'),
+      },
       detached: false,
       stdio: ['ignore', logFd, logFd],
       windowsHide: true,

@@ -43,6 +43,11 @@ jobs:
           cd backend
           npm run build
 
+      - name: Verify Packaged Backend ESM Execution Test
+        run: |
+          cd backend
+          npx vitest run tests/packaged-resource-layout.test.ts
+
       - name: Build React Frontend Assets
         run: |
           cd frontend

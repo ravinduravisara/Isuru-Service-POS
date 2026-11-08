@@ -22,6 +22,8 @@ extraResources:
     to: assets
   - from: ../backend/dist
     to: backend/dist
+  - from: ../backend/package.json
+    to: backend/package.json
   - from: ../backend/prisma
     to: backend/prisma
   - from: ../backend/node_modules
@@ -36,6 +38,8 @@ extraResources:
       - "!**/tests"
       - "!**/*.ts"
       - "!**/*.map"
+  - from: ../backend/node_modules/.prisma
+    to: backend/node_modules/.prisma
   - from: ../frontend/dist
     to: frontend/dist
   - from: windows/postgres/pgsql

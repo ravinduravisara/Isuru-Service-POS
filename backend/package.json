@@ -6,7 +6,7 @@
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc",
+    "build": "tsc && node -e \"import('fs').then(fs => fs.writeFileSync('dist/package.json', JSON.stringify({type:'module',main:'server.js'},null,2)))\"",
     "start": "node dist/server.js",
     "test": "vitest run",
     "prisma:generate": "prisma generate",
