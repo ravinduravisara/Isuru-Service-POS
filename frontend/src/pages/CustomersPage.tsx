@@ -17,10 +17,12 @@ import {
   X,
   CreditCard,
   Building2,
+  Download,
 } from 'lucide-react';
 import { Modal } from '../components/ui/Modal';
 import { Badge } from '../components/ui/Badge';
 import { useAuthStore } from '../store/authStore';
+import { downloadCsv } from '../utils/csvExport';
 
 const DEFAULT_VEHICLE_TYPES: VehicleType[] = ['Car', 'Bike', 'Van', 'Bus', 'Lorry', 'Others'];
 
@@ -233,6 +235,20 @@ export const CustomersPage: React.FC = () => {
     }
   };
 
+  const handleExportCustomersCsv = () => {
+    const headers = ['Customer Name', 'Phone Number', 'NIC / ID', 'Vehicles Count', 'Bank Details', 'Created At'];
+    const rows = customers.map((c) => [
+      c.name,
+      c.phone || '',
+      c.nic || '',
+      c.vehiclesCount || 0,
+      c.bankDetails || '',
+      new Date(c.createdAt).toLocaleDateString(),
+    ]);
+
+    downloadCsv(`isuru_customers_${new Date().toISOString().slice(0, 10)}.csv`, headers, rows);
+  };
+
   return (
     <div className="space-y-5">
       {/* Page Header */}
@@ -244,13 +260,24 @@ export const CustomersPage: React.FC = () => {
           </p>
         </div>
 
-        <button
-          onClick={handleOpenCreate}
-          className="flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold shadow-xs transition-colors cursor-pointer w-full sm:w-auto"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Register New Customer</span>
-        </button>
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          <button
+            onClick={handleExportCustomersCsv}
+            disabled={customers.length === 0}
+            className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg text-xs font-semibold shadow-xs transition-colors cursor-pointer disabled:opacity-50"
+            title="Export customer registry to CSV"
+          >
+            <Download className="w-4 h-4" />
+            <span>Export CSV</span>
+          </button>
+          <button
+            onClick={handleOpenCreate}
+            className="flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold shadow-xs transition-colors cursor-pointer w-full sm:w-auto"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Register New Customer</span>
+          </button>
+        </div>
       </div>
 
       {/* Notifications */}

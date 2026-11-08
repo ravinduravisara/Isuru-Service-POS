@@ -16,10 +16,12 @@ import {
   Car,
   Tag,
   Bookmark,
+  Download,
 } from 'lucide-react';
 import { Modal } from '../components/ui/Modal';
 import { Badge } from '../components/ui/Badge';
 import { useAuthStore } from '../store/authStore';
+import { downloadCsv } from '../utils/csvExport';
 
 const DEFAULT_CATEGORIES: VehicleType[] = [
   'Car',
@@ -499,6 +501,18 @@ export const ServicesPage: React.FC = () => {
     }
   };
 
+  const handleExportServicesCsv = () => {
+    const headers = ['Vehicle Category', 'Service Name', 'Rate / Price (LKR)', 'Description'];
+    const rows = services.map((s) => [
+      s.category,
+      s.name,
+      s.price,
+      s.description || '',
+    ]);
+
+    downloadCsv(`isuru_service_rates_${new Date().toISOString().slice(0, 10)}.csv`, headers, rows);
+  };
+
   return (
     <div className="space-y-5">
       {/* Header */}
@@ -512,6 +526,16 @@ export const ServicesPage: React.FC = () => {
 
         {isAdmin() && (
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
+            <button
+              onClick={handleExportServicesCsv}
+              disabled={services.length === 0}
+              className="flex items-center justify-center gap-1.5 px-3 py-2 bg-white hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-semibold border border-slate-300 shadow-xs transition-colors cursor-pointer disabled:opacity-50"
+              title="Export all service rates to CSV"
+            >
+              <Download className="w-3.5 h-3.5 text-slate-500" />
+              <span>Export CSV</span>
+            </button>
+
             <button
               onClick={() => {
                 setPresetError(null);

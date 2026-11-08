@@ -15,10 +15,12 @@ import {
   Coins,
   CheckCircle,
   FileSpreadsheet,
+  Download,
 } from 'lucide-react';
 import { Modal } from '../components/ui/Modal';
 import { Badge } from '../components/ui/Badge';
 import { useAuthStore } from '../store/authStore';
+import { downloadCsv } from '../utils/csvExport';
 
 export const InventoryPage: React.FC = () => {
   const { isAdmin } = useAuthStore();
@@ -308,6 +310,32 @@ export const InventoryPage: React.FC = () => {
     ? products.filter((p) => p.quantity <= 5)
     : products;
 
+  const handleExportInventoryCsv = () => {
+    const headers = [
+      'Item ID',
+      'Item Name',
+      'Brand',
+      'Stock Quantity',
+      'Unit Price (LKR)',
+      'Buying Price (LKR)',
+      'Supplier Code',
+      'Payment Method',
+    ];
+
+    const rows = products.map((p) => [
+      p.itemId,
+      p.itemName,
+      p.brand || '',
+      p.quantity,
+      p.unitPrice,
+      p.buyingPrice || 0,
+      p.supplierCode || '',
+      p.paymentMethod || 'Cash',
+    ]);
+
+    downloadCsv(`isuru_inventory_${new Date().toISOString().slice(0, 10)}.csv`, headers, rows);
+  };
+
   return (
     <div className="space-y-5">
       {/* Header */}
@@ -320,6 +348,15 @@ export const InventoryPage: React.FC = () => {
         </div>
 
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
+          <button
+            onClick={handleExportInventoryCsv}
+            disabled={products.length === 0}
+            className="flex items-center justify-center gap-1.5 px-3 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg text-xs font-semibold shadow-xs transition-colors cursor-pointer disabled:opacity-50"
+            title="Export catalog inventory to CSV"
+          >
+            <Download className="w-4 h-4" />
+            <span>Export CSV</span>
+          </button>
           <button
             onClick={handleOpenCsv}
             className="flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold transition-colors cursor-pointer"

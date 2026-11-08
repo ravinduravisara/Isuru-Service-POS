@@ -14,10 +14,12 @@ import {
   Trash2,
   AlertCircle,
   ChevronDown,
+  Download,
 } from 'lucide-react';
 import { Badge } from '../components/ui/Badge';
 import { InvoicePrintModal } from '../components/printing/InvoicePrintModal';
 import { useAuthStore } from '../store/authStore';
+import { downloadCsv } from '../utils/csvExport';
 
 export const InvoicesPage: React.FC = () => {
   const { isAdmin } = useAuthStore();
@@ -226,6 +228,41 @@ export const InvoicesPage: React.FC = () => {
     );
   };
 
+  const handleExportCsv = () => {
+    const headers = [
+      'Bill No',
+      'Date & Time',
+      'Customer Name',
+      'Phone Number',
+      'Vehicle No',
+      'Vehicle Type',
+      'Payment Method',
+      'Payment Status',
+      'Subtotal (LKR)',
+      'Discount (LKR)',
+      'Total Amount (LKR)',
+      'Items Count',
+    ];
+
+    const rows = invoices.map((inv) => [
+      inv.billNo,
+      new Date(inv.dateTime).toLocaleString(),
+      inv.customerName,
+      inv.customerPhone,
+      inv.vehicleNo,
+      inv.vehicleType,
+      inv.paymentMethod,
+      inv.paymentStatus,
+      inv.subtotalAmount,
+      inv.discountAmount,
+      inv.totalAmount,
+      inv.items.length,
+    ]);
+
+    const filename = `isuru_invoices_${new Date().toISOString().slice(0, 10)}.csv`;
+    downloadCsv(filename, headers, rows);
+  };
+
   return (
     <div className="space-y-5">
       {/* Page Header */}
@@ -237,29 +274,41 @@ export const InvoicesPage: React.FC = () => {
           </p>
         </div>
 
-        {/* Tab Filters */}
-        <div className="inline-flex p-1 bg-slate-200/80 rounded-lg text-xs font-semibold">
+        <div className="flex items-center gap-3">
           <button
-            onClick={() => setCreditorsOnly(false)}
-            className={`px-3 py-1.5 rounded-md transition-all cursor-pointer ${
-              !creditorsOnly
-                ? 'bg-white text-slate-900 shadow-xs font-bold'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
+            onClick={handleExportCsv}
+            disabled={invoices.length === 0}
+            className="flex items-center gap-1.5 px-3.5 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg text-xs font-semibold shadow-xs transition-colors cursor-pointer disabled:opacity-50"
+            title="Export filtered billing records to CSV"
           >
-            All Invoices
+            <Download className="w-3.5 h-3.5" />
+            <span>Export CSV</span>
           </button>
-          <button
-            onClick={() => setCreditorsOnly(true)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all cursor-pointer ${
-              creditorsOnly
-                ? 'bg-rose-600 text-white shadow-xs font-bold'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <Coins className="w-3.5 h-3.5" />
-            <span>Unpaid Creditors</span>
-          </button>
+
+          {/* Tab Filters */}
+          <div className="inline-flex p-1 bg-slate-200/80 rounded-lg text-xs font-semibold">
+            <button
+              onClick={() => setCreditorsOnly(false)}
+              className={`px-3 py-1.5 rounded-md transition-all cursor-pointer ${
+                !creditorsOnly
+                  ? 'bg-white text-slate-900 shadow-xs font-bold'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              All Invoices
+            </button>
+            <button
+              onClick={() => setCreditorsOnly(true)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all cursor-pointer ${
+                creditorsOnly
+                  ? 'bg-rose-600 text-white shadow-xs font-bold'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Coins className="w-3.5 h-3.5" />
+              <span>Unpaid Creditors</span>
+            </button>
+          </div>
         </div>
       </div>
 

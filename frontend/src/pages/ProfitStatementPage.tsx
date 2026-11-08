@@ -11,8 +11,10 @@ import {
   FileSpreadsheet,
   AlertCircle,
   HelpCircle,
+  Download,
 } from 'lucide-react';
 import { Badge } from '../components/ui/Badge';
+import { downloadCsv } from '../utils/csvExport';
 
 export const ProfitStatementPage: React.FC = () => {
   const todayStr = new Date().toISOString().split('T')[0];
@@ -70,6 +72,26 @@ export const ProfitStatementPage: React.FC = () => {
     window.print();
   };
 
+  const handleExportCsv = () => {
+    if (!statement) return;
+    const headers = ['Financial Metric', 'Value'];
+    const rows = [
+      ['Date Range From', statement.from || fromDate || 'Start'],
+      ['Date Range To', statement.to || toDate || 'Present'],
+      ['Service Labor Revenue (LKR)', statement.serviceRevenue],
+      ['Parts / Products Revenue (LKR)', statement.partsRevenue],
+      ['Total Sales Revenue (LKR)', statement.totalSalesRevenue],
+      ['Cost of Goods Sold - COGS (LKR)', statement.cogs],
+      ['Gross Operating Profit (LKR)', statement.grossProfit],
+      ['Gross Profit Margin (%)', `${statement.profitMargin.toFixed(2)}%`],
+      ['Total Vendor Purchases (LKR)', statement.totalPurchases],
+      ['Net Profit After Purchases (LKR)', statement.netProfitAfterPurchases],
+      ['Total Line Items Sold', statement.linesCount],
+    ];
+
+    downloadCsv(`isuru_profit_statement_${fromDate || 'start'}_to_${toDate || 'today'}.csv`, headers, rows);
+  };
+
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
       {/* Header & Print Control */}
@@ -81,13 +103,24 @@ export const ProfitStatementPage: React.FC = () => {
           </p>
         </div>
 
-        <button
-          onClick={handlePrint}
-          className="flex items-center justify-center gap-1.5 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold shadow-xs transition-colors cursor-pointer w-full sm:w-auto"
-        >
-          <Printer className="w-4 h-4" />
-          <span>Print Financial Statement</span>
-        </button>
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          <button
+            onClick={handleExportCsv}
+            disabled={!statement}
+            className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg text-xs font-semibold shadow-xs transition-colors cursor-pointer disabled:opacity-50"
+            title="Export statement summary to CSV"
+          >
+            <Download className="w-4 h-4" />
+            <span>Export CSV</span>
+          </button>
+          <button
+            onClick={handlePrint}
+            className="flex items-center justify-center gap-1.5 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold shadow-xs transition-colors cursor-pointer w-full sm:w-auto"
+          >
+            <Printer className="w-4 h-4" />
+            <span>Print Financial Statement</span>
+          </button>
+        </div>
       </div>
 
       {/* Date Filter & Preset Controls */}

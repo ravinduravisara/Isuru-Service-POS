@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../services/api';
 import { Customer, Vehicle, Service, VehicleType, PaymentMethod, Invoice } from '../types';
 import {
@@ -35,11 +35,27 @@ export const BillingPage: React.FC = () => {
   const [vehicleTypes, setVehicleTypes] = useState<VehicleType[]>(DEFAULT_VEHICLE_TYPES);
 
   // Customer & Vehicle State
+  const customerDropdownRef = useRef<HTMLDivElement>(null);
+  const itemLookupTimerRef = useRef<{ [key: number]: NodeJS.Timeout }>({});
   const [customerSearchQuery, setCustomerSearchQuery] = useState('');
   const [customerSearchResults, setCustomerSearchResults] = useState<Customer[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [isCustomerDropdownOpen, setIsCustomerDropdownOpen] = useState(false);
   const [isManualCustomer, setIsManualCustomer] = useState(false);
+
+  // Close customer search dropdown on outside click
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        customerDropdownRef.current &&
+        !customerDropdownRef.current.contains(event.target as Node)
+      ) {
+        setIsCustomerDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
@@ -293,66 +309,74 @@ export const BillingPage: React.FC = () => {
     });
   };
 
-  // Lookup Product Item ID with offline IndexedDB fallback
-  const handleItemIdChange = async (index: number, itemId: string) => {
-    const upperId = itemId.trim().toUpperCase();
+  // Lookup Product Item ID with debounce and offline IndexedDB fallback
+  const handleItemIdChange = (index: number, itemId: string) => {
+    const rawVal = itemId.toUpperCase();
     setRows((prev) => {
       const updated = [...prev];
-      updated[index].itemId = upperId;
+      updated[index] = { ...updated[index], itemId: rawVal };
       return updated;
     });
 
-    if (upperId.length >= 3) {
-      let foundProd: any = null;
+    if (itemLookupTimerRef.current[index]) {
+      clearTimeout(itemLookupTimerRef.current[index]);
+    }
 
-      // 1. Try server lookup
-      try {
-        const res = await api.get(`/inventory/lookup?itemId=${encodeURIComponent(upperId)}`);
-        if (res.data?.product) {
-          foundProd = res.data.product;
-        }
-      } catch {
-        // Fall back to offline
-      }
+    const cleanId = rawVal.trim();
+    if (cleanId.length >= 3) {
+      itemLookupTimerRef.current[index] = setTimeout(async () => {
+        let foundProd: any = null;
 
-      // 2. Offline fallback from local IndexedDB
-      if (!foundProd) {
+        // 1. Try server lookup
         try {
-          const directMatch = await offlineDb.cachedProducts
-            .where('itemId')
-            .equalsIgnoreCase(upperId)
-            .first();
-          if (directMatch) {
-            foundProd = directMatch;
-          } else {
-            // Search slash part-numbers or partial match
-            const partialMatch = await offlineDb.cachedProducts
-              .filter((p) => p.itemId.toUpperCase().includes(upperId))
-              .first();
-            if (partialMatch) foundProd = partialMatch;
+          const res = await api.get(`/inventory/lookup?itemId=${encodeURIComponent(cleanId)}`);
+          if (res.data?.product) {
+            foundProd = res.data.product;
           }
-        } catch (dbErr) {
-          console.error('Offline product lookup error:', dbErr);
+        } catch {
+          // Fall back to offline
         }
-      }
 
-      if (foundProd) {
-        setRows((prev) => {
-          const updated = [...prev];
-          const rate = foundProd.unitPrice || updated[index].rate;
-          const desc = foundProd.brand ? `${foundProd.itemName} (${foundProd.brand})` : foundProd.itemName;
-          const amount = Math.round(updated[index].qty * rate * 100) / 100;
-          updated[index] = {
-            ...updated[index],
-            itemId: foundProd.itemId,
-            service: updated[index].service || foundProd.itemName,
-            description: desc,
-            rate,
-            amount,
-          };
-          return updated;
-        });
-      }
+        // 2. Offline fallback from local IndexedDB
+        if (!foundProd) {
+          try {
+            const directMatch = await offlineDb.cachedProducts
+              .where('itemId')
+              .equalsIgnoreCase(cleanId)
+              .first();
+            if (directMatch) {
+              foundProd = directMatch;
+            } else {
+              // Search slash part-numbers or partial match
+              const partialMatch = await offlineDb.cachedProducts
+                .filter((p) => p.itemId.toUpperCase().includes(cleanId))
+                .first();
+              if (partialMatch) foundProd = partialMatch;
+            }
+          } catch (dbErr) {
+            console.error('Offline product lookup error:', dbErr);
+          }
+        }
+
+        if (foundProd) {
+          setRows((prev) => {
+            const updated = [...prev];
+            if (!updated[index]) return prev;
+            const rate = foundProd.unitPrice || updated[index].rate;
+            const desc = foundProd.brand ? `${foundProd.itemName} (${foundProd.brand})` : foundProd.itemName;
+            const amount = Math.round(updated[index].qty * rate * 100) / 100;
+            updated[index] = {
+              ...updated[index],
+              itemId: foundProd.itemId,
+              service: updated[index].service || foundProd.itemName,
+              description: desc,
+              rate,
+              amount,
+            };
+            return updated;
+          });
+        }
+      }, 300);
     }
   };
 
@@ -581,7 +605,7 @@ export const BillingPage: React.FC = () => {
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
           {/* Customer Lookup / Input */}
-          <div className="relative">
+          <div ref={customerDropdownRef} className="relative">
             <label className="block text-xs font-semibold text-slate-700 mb-1">
               Customer Name / Search
             </label>
@@ -590,9 +614,13 @@ export const BillingPage: React.FC = () => {
                 type="text"
                 value={selectedCustomer ? selectedCustomer.name : customerSearchQuery}
                 onChange={(e) => {
+                  const val = e.target.value;
                   if (selectedCustomer) setSelectedCustomer(null);
-                  setCustomerSearchQuery(e.target.value);
-                  setCustomerName(e.target.value);
+                  setCustomerSearchQuery(val);
+                  setCustomerName(val);
+                }}
+                onFocus={() => {
+                  if (customerSearchResults.length > 0) setIsCustomerDropdownOpen(true);
                 }}
                 placeholder="Search or enter customer..."
                 className="w-full px-3 py-2 pr-8 border border-slate-300 rounded-lg text-sm text-slate-900 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
@@ -627,12 +655,12 @@ export const BillingPage: React.FC = () => {
               <label className="block text-xs font-semibold text-slate-700">
                 Phone Number
               </label>
-              <span className="text-[10px] text-slate-400">10 digits only</span>
+              <span className="text-[10px] text-slate-400">Numbers &amp; +</span>
             </div>
             <input
               type="text"
               value={customerPhone}
-              onChange={(e) => setCustomerPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
+              onChange={(e) => setCustomerPhone(e.target.value.replace(/[^\d+ -]/g, '').slice(0, 15))}
               placeholder="e.g. 0771234567"
               maxLength={10}
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono text-slate-900 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"

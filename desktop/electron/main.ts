@@ -1,7 +1,7 @@
 // ==============================================================================
 // ISURU SERVICE CENTER POS: ELECTRON MAIN PROCESS
 // ==============================================================================
-import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, dialog, Menu } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -112,6 +112,7 @@ function createMainWindow(targetUrl: string): BrowserWindow {
     title: 'ISURU Service POS',
     backgroundColor: '#0f172a',
     show: false,
+    autoHideMenuBar: true,
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -120,6 +121,8 @@ function createMainWindow(targetUrl: string): BrowserWindow {
       sandbox: false,
     },
   });
+
+  win.setMenuBarVisibility(false);
 
   // Native window control tracking
   win.on('resize', () => saveWindowBounds(win));
@@ -287,9 +290,46 @@ function registerIpcHandlers() {
 }
 
 /**
+ * Configure application menu with native clipboard and edit capabilities.
+ * Prevents Alt-key trapping while maintaining standard shortcuts (Ctrl+C, Ctrl+V, etc.)
+ */
+function setupApplicationMenu() {
+  const menuTemplate: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'selectAll' },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' },
+        { role: 'forceReload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate));
+}
+
+/**
  * Application Lifecycle Initialization
  */
 app.whenReady().then(async () => {
+  setupApplicationMenu();
   splashWindow = createSplashWindow();
   registerIpcHandlers();
 

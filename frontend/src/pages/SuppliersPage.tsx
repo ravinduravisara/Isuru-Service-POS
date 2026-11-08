@@ -15,10 +15,12 @@ import {
   Eye,
   Check,
   AlertCircle,
+  Download,
 } from 'lucide-react';
 import { Modal } from '../components/ui/Modal';
 import { Badge } from '../components/ui/Badge';
 import { useAuthStore } from '../store/authStore';
+import { downloadCsv } from '../utils/csvExport';
 
 export const SuppliersPage: React.FC = () => {
   const { isAdmin } = useAuthStore();
@@ -193,6 +195,30 @@ export const SuppliersPage: React.FC = () => {
   const totalCredit = suppliers.reduce((sum, s) => sum + (s.creditTotal || 0), 0);
   const totalCheque = suppliers.reduce((sum, s) => sum + (s.chequeTotal || 0), 0);
 
+  const handleExportSuppliersCsv = () => {
+    const headers = [
+      'Supplier Code',
+      'Supplier Name',
+      'Contact Info',
+      'Cash Total (LKR)',
+      'Pending Credit (LKR)',
+      'Cheque Total (LKR)',
+      'Invoice / Memo',
+    ];
+
+    const rows = suppliers.map((s) => [
+      s.supplierCode,
+      s.name,
+      s.contact || '',
+      s.cashTotal || 0,
+      s.creditTotal || 0,
+      s.chequeTotal || 0,
+      s.invoice || '',
+    ]);
+
+    downloadCsv(`isuru_suppliers_${new Date().toISOString().slice(0, 10)}.csv`, headers, rows);
+  };
+
   return (
     <div className="space-y-5">
       {/* Header */}
@@ -204,13 +230,24 @@ export const SuppliersPage: React.FC = () => {
           </p>
         </div>
 
-        <button
-          onClick={handleOpenCreate}
-          className="flex items-center justify-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold shadow-xs transition-colors cursor-pointer w-full sm:w-auto"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Add New Supplier</span>
-        </button>
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          <button
+            onClick={handleExportSuppliersCsv}
+            disabled={suppliers.length === 0}
+            className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg text-xs font-semibold shadow-xs transition-colors cursor-pointer disabled:opacity-50"
+            title="Export supplier ledger to CSV"
+          >
+            <Download className="w-4 h-4" />
+            <span>Export CSV</span>
+          </button>
+          <button
+            onClick={handleOpenCreate}
+            className="flex items-center justify-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold shadow-xs transition-colors cursor-pointer w-full sm:w-auto"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Add New Supplier</span>
+          </button>
+        </div>
       </div>
 
       {/* Notifications */}

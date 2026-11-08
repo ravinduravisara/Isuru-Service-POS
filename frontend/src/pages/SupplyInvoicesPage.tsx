@@ -11,10 +11,12 @@ import {
   CheckCircle,
   AlertCircle,
   FileText,
+  Download,
 } from 'lucide-react';
 import { Modal } from '../components/ui/Modal';
 import { Badge } from '../components/ui/Badge';
 import { useAuthStore } from '../store/authStore';
+import { downloadCsv } from '../utils/csvExport';
 
 export const SupplyInvoicesPage: React.FC = () => {
   const { isAdmin } = useAuthStore();
@@ -263,6 +265,38 @@ export const SupplyInvoicesPage: React.FC = () => {
     );
   };
 
+  const handleExportSupplyInvoicesCsv = () => {
+    const headers = [
+      'Invoice No',
+      'Created Date',
+      'Supplier Code',
+      'Item ID',
+      'Quantity',
+      'Buying Price (LKR)',
+      'Total Amount (LKR)',
+      'Payment Status',
+      'Settled',
+      'Cheque / Value Date',
+      'Cheque No',
+    ];
+
+    const rows = invoices.map((inv) => [
+      inv.invoiceNo,
+      new Date(inv.createdAt).toLocaleDateString(),
+      inv.supplierCode,
+      inv.itemId,
+      inv.quantity,
+      inv.buyingPrice,
+      inv.total,
+      inv.paymentStatus,
+      inv.isSettled ? 'Yes' : 'No',
+      inv.valueDate ? new Date(inv.valueDate).toLocaleDateString() : '',
+      inv.chequeNo || '',
+    ]);
+
+    downloadCsv(`isuru_supply_invoices_${new Date().toISOString().slice(0, 10)}.csv`, headers, rows);
+  };
+
   return (
     <div className="space-y-5">
       {/* Header */}
@@ -274,13 +308,24 @@ export const SupplyInvoicesPage: React.FC = () => {
           </p>
         </div>
 
-        <button
-          onClick={handleOpenCreate}
-          className="flex items-center justify-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold shadow-xs transition-colors cursor-pointer w-full sm:w-auto"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Record New Purchase</span>
-        </button>
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          <button
+            onClick={handleExportSupplyInvoicesCsv}
+            disabled={invoices.length === 0}
+            className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg text-xs font-semibold shadow-xs transition-colors cursor-pointer disabled:opacity-50"
+            title="Export supply purchase invoices to CSV"
+          >
+            <Download className="w-4 h-4" />
+            <span>Export CSV</span>
+          </button>
+          <button
+            onClick={handleOpenCreate}
+            className="flex items-center justify-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold shadow-xs transition-colors cursor-pointer w-full sm:w-auto"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Record New Purchase</span>
+          </button>
+        </div>
       </div>
 
       {/* Notifications */}
