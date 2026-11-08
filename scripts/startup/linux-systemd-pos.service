@@ -1,0 +1,15 @@
+[Unit]
+Description=ISURU Service Center Local POS Stack
+Requires=docker.service
+After=docker.service network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/isuru-pos
+ExecStart=/usr/bin/docker compose -f compose.yaml up -d
+ExecStop=/usr/bin/docker compose -f compose.yaml down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

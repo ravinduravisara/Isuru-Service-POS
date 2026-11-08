@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { prisma } from '../../config/prisma.js';
+import { recordOutboxOperation } from '../../services/outbox.service.js';
 import { DEFAULT_SERVICES } from '../../config/constants.js';
 
 export async function getServices(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -83,13 +84,30 @@ export async function createService(req: Request, res: Response, next: NextFunct
       return;
     }
 
-    const service = await prisma.service.create({
-      data: {
-        category: category || 'Others',
-        name: name.trim(),
-        price: priceNum,
-        description: (description || '').trim(),
-      },
+    const service = await prisma.$transaction(async (tx) => {
+      const s = await tx.service.create({
+        data: {
+          category: category || 'Others',
+          name: name.trim(),
+          price: priceNum,
+          description: (description || '').trim(),
+        },
+      });
+
+      await recordOutboxOperation(tx, {
+        entityType: 'SERVICE',
+        entityId: s.id,
+        operationType: 'CREATE',
+        payload: {
+          id: s.id,
+          category: s.category,
+          name: s.name,
+          price: Number(s.price),
+          description: s.description,
+        },
+      });
+
+      return s;
     });
 
     res.status(201).json({
@@ -129,14 +147,31 @@ export async function updateService(req: Request, res: Response, next: NextFunct
       return;
     }
 
-    const service = await prisma.service.update({
-      where: { id },
-      data: {
-        category: category || 'Others',
-        name: name.trim(),
-        price: priceNum,
-        description: (description || '').trim(),
-      },
+    const service = await prisma.$transaction(async (tx) => {
+      const s = await tx.service.update({
+        where: { id },
+        data: {
+          category: category || 'Others',
+          name: name.trim(),
+          price: priceNum,
+          description: (description || '').trim(),
+        },
+      });
+
+      await recordOutboxOperation(tx, {
+        entityType: 'SERVICE',
+        entityId: s.id,
+        operationType: 'UPDATE',
+        payload: {
+          id: s.id,
+          category: s.category,
+          name: s.name,
+          price: Number(s.price),
+          description: s.description,
+        },
+      });
+
+      return s;
     });
 
     res.json({
@@ -167,8 +202,17 @@ export async function updateService(req: Request, res: Response, next: NextFunct
 export async function deleteService(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const id = req.params.id as string;
-    await prisma.service.delete({
-      where: { id },
+    await prisma.$transaction(async (tx) => {
+      await tx.service.delete({
+        where: { id },
+      });
+
+      await recordOutboxOperation(tx, {
+        entityType: 'SERVICE',
+        entityId: id,
+        operationType: 'DELETE',
+        payload: { id },
+      });
     });
 
     res.json({ success: true, message: 'Service deleted successfully.' });

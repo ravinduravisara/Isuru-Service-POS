@@ -47,6 +47,8 @@ The system replaces legacy MongoDB document collections with a normalized Postgr
 | `stock_movements` | Stock audit ledger | Primary key `id`, index on `itemId`, `movedAt` | Negative for sales, positive for purchases |
 | `invoices` | Customer sales invoices | Primary key `id`, unique `billNo`, foreign keys to customer & vehicle | `DECIMAL(12,2)` subtotal, discount, total |
 | `invoice_items` | Relational line items | Foreign key `invoiceId` → `invoices.id` (ON DELETE CASCADE) | Frozen `rate` and `buyingPrice` for accurate COGS |
+| `sync_outbox` | Persistent Transactional Outbox | Primary key `id`, unique `operationId`, unique `idempotencyKey` | Durable queue for local-first billing operations |
+| `sync_operations` | Cloud Sync Audit & Idempotency | Primary key `id`, unique `clientOpId` | Server-side record of applied synchronization batches |
 
 ---
 

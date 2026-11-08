@@ -23,6 +23,11 @@ const envSchema = z.object({
   UPLOAD_DIR: z.string().default(path.resolve(__dirname, '../../uploads')),
   INITIAL_ADMIN_USERNAME: z.string().default('admin'),
   INITIAL_ADMIN_PASSWORD: z.string().default('Admin@ISURU2026!'),
+  CLOUD_SYNC_URL: z.string().default('https://88.222.242.20:8443'),
+  CLOUD_SYNC_ENABLED: z.coerce.boolean().default(true),
+  CLOUD_SYNC_INTERVAL_MS: z.coerce.number().int().positive().default(10000),
+  POS_DEVICE_ID: z.string().default('pos-main'),
+  POS_ROLE: z.enum(['LOCAL_PRIMARY', 'CLOUD_HUB']).default('LOCAL_PRIMARY'),
 });
 
 // Default fallbacks for development/testing ONLY
@@ -40,6 +45,11 @@ const rawEnv = {
   UPLOAD_DIR: process.env.UPLOAD_DIR,
   INITIAL_ADMIN_USERNAME: process.env.INITIAL_ADMIN_USERNAME,
   INITIAL_ADMIN_PASSWORD: process.env.INITIAL_ADMIN_PASSWORD,
+  CLOUD_SYNC_URL: process.env.CLOUD_SYNC_URL,
+  CLOUD_SYNC_ENABLED: process.env.CLOUD_SYNC_ENABLED,
+  CLOUD_SYNC_INTERVAL_MS: process.env.CLOUD_SYNC_INTERVAL_MS,
+  POS_DEVICE_ID: process.env.POS_DEVICE_ID,
+  POS_ROLE: process.env.POS_ROLE,
 };
 
 const parsed = envSchema.safeParse(rawEnv);

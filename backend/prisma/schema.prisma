@@ -229,3 +229,26 @@ model SyncOperation {
   @@index([status])
   @@map("sync_operations")
 }
+
+model SyncOutbox {
+  id                    String    @id @default(uuid())
+  deviceId              String    @default("pos-main")
+  operationId           String    @unique
+  entityType            String    // INVOICE, CUSTOMER, VEHICLE, PRODUCT, SERVICE, STOCK_MOVEMENT, SUPPLY_INVOICE, SETTLEMENT, SETTING
+  entityId              String
+  operationType         String    // CREATE, UPDATE, DELETE
+  payload               String    @db.Text
+  status                String    @default("PENDING") // PENDING, PROCESSING, SYNCED, FAILED, CONFLICT
+  retryCount            Int       @default(0)
+  lastAttemptAt         DateTime?
+  lastError             String?   @db.Text
+  idempotencyKey        String    @unique
+  serverAcknowledgement String?   @db.Text
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([status])
+  @@index([entityType])
+  @@index([createdAt])
+  @@map("sync_outbox")
+}

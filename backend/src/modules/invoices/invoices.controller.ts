@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { prisma } from '../../config/prisma.js';
+import { recordOutboxOperation } from '../../services/outbox.service.js';
 
 export async function createInvoice(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -248,6 +249,40 @@ export async function createInvoice(req: Request, res: Response, next: NextFunct
         },
       });
 
+      // 7. Atomically record to persistent synchronization outbox
+      await recordOutboxOperation(tx, {
+        entityType: 'INVOICE',
+        entityId: invoice.id,
+        operationType: 'CREATE',
+        idempotencyKey: invoice.clientTxId || `inv-${invoice.id}`,
+        payload: {
+          id: invoice.id,
+          billNo: invoice.billNo,
+          clientTxId: invoice.clientTxId,
+          customerId: invoice.customerId,
+          customerName: invoice.customerName,
+          customerPhone: invoice.customerPhone,
+          vehicleId: invoice.vehicleId,
+          vehicleNo: invoice.vehicleNo,
+          vehicleType: invoice.vehicleType,
+          dateTime: invoice.dateTime,
+          subtotalAmount: Number(invoice.subtotalAmount),
+          discountAmount: Number(invoice.discountAmount),
+          totalAmount: Number(invoice.totalAmount),
+          paymentMethod: invoice.paymentMethod,
+          paymentStatus: invoice.paymentStatus,
+          items: invoice.items.map((it) => ({
+            service: it.service,
+            itemId: it.itemId,
+            description: it.description,
+            qty: it.qty,
+            rate: Number(it.rate),
+            amount: Number(it.amount),
+            buyingPrice: Number(it.buyingPrice),
+          })),
+        },
+      });
+
       return invoice;
     });
 
@@ -488,12 +523,28 @@ export async function settleInvoiceById(req: Request, res: Response, next: NextF
     const id = req.params.id as string;
     const now = new Date();
 
-    const invoice = await prisma.invoice.update({
-      where: { id },
-      data: {
-        paymentStatus: 'Paid',
-        paymentSettledAt: now,
-      },
+    const invoice = await prisma.$transaction(async (tx) => {
+      const inv = await tx.invoice.update({
+        where: { id },
+        data: {
+          paymentStatus: 'Paid',
+          paymentSettledAt: now,
+        },
+      });
+
+      await recordOutboxOperation(tx, {
+        entityType: 'INVOICE',
+        entityId: inv.id,
+        operationType: 'UPDATE',
+        payload: {
+          id: inv.id,
+          billNo: inv.billNo,
+          paymentStatus: 'Paid',
+          paymentSettledAt: now.toISOString(),
+        },
+      });
+
+      return inv;
     });
 
     res.json({
@@ -543,6 +594,13 @@ export async function deleteInvoice(req: Request, res: Response, next: NextFunct
 
       await tx.invoice.delete({
         where: { id },
+      });
+
+      await recordOutboxOperation(tx, {
+        entityType: 'INVOICE',
+        entityId: invoice.id,
+        operationType: 'DELETE',
+        payload: { id: invoice.id, billNo: invoice.billNo },
       });
 
       return invoice;

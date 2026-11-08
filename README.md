@@ -9,13 +9,16 @@
 The ISURU Service Center Billing System is a business management and point-of-sale platform tailored for automotive service center operations. It provides high-speed counter POS invoicing, live vehicle and customer registration, inventory tracking with automated stock decrements, frozen buying-cost accounting, supplier accounts payable ledgers, and an itemized Profit & Loss statement.
 
 ### Key Architectural Capabilities
-- **Relational PostgreSQL Engine:** Normalized 11-table PostgreSQL relational schema with foreign key integrity, indexes, and version-controlled Prisma migrations.
+- **Local-First Distributed Architecture:** Operates 100% autonomously on the service center billing computer using local PostgreSQL. Internet connectivity is never required for normal sales, customer registration, inventory updates, or printing.
+- **Relational PostgreSQL Engine:** Normalized 12-table PostgreSQL relational schema with foreign key integrity, indexes, and version-controlled Prisma migrations.
+- **Automatic Cloud Synchronization to Neon:** Background worker batches transactional outbox operations to Neon Serverless PostgreSQL with idempotency guarantees, collision-free bill numbering, and conflict reconciliation.
+- **Persistent Transactional Outbox:** Every billing and inventory mutation commits to local PostgreSQL and `sync_outbox` atomically in the same database transaction — surviving power cuts, container restarts, and network drops.
 - **Exact Financial Precision:** Exact `DECIMAL(12, 2)` arithmetic for all buying prices, selling rates, invoice totals, discounts, and supplier balances — zero floating-point discrepancies.
-- **Atomic Database Transactions:** Concurrency-guarded billing transactions (`prisma.$transaction`) ensuring synchronized invoice creation, stock decrements, and historical cost-basis freezing.
-- **Production Containerization:** Fully containerized stack orchestrated via Docker Compose, multi-stage Alpine Docker builds, and Nginx reverse proxy with IP-based TLS configuration.
-- **Automated Backups & Recovery:** Versioned `pg_dump` backup scripts with gzip compression, SHA256 integrity verification, and 14-day automated retention rotation.
+- **Atomic Database Transactions:** Concurrency-guarded billing transactions (`prisma.$transaction`) with row locking (`SELECT ... FOR UPDATE`) ensuring synchronized invoice creation and stock decrements.
+- **Production Containerization:** Fully containerized stack orchestrated via Docker Compose, multi-stage Alpine Docker builds, and Nginx reverse proxy.
+- **Automated Backups & Recovery:** Native `pg_dump` backup scripts with gzip compression, SHA256 integrity verification, 14-day automated retention, and client-side AES-GCM encrypted disaster recovery exports.
 - **High-Speed Counter POS Billing:** Hardware keyboard-driven POS counter (`F2`, `Ctrl+S`, `Escape`) with instant A4 Tax Invoice and 58mm/80mm Thermal Receipt rollback printing.
-- **Comprehensive Automated Testing:** 41 Vitest integration tests covering authentication, role guarding, customer/vehicle relations, inventory mutations, supplier ledger settlements, and profit statement accounting.
+- **Comprehensive Automated Testing:** 57 Vitest integration and concurrency tests covering authentication, role guarding, customer/vehicle relations, inventory mutations, supplier ledger settlements, sync outbox, and idempotent cloud push.
 
 ---
 

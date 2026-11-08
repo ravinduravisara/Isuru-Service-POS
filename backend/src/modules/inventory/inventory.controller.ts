@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { prisma } from '../../config/prisma.js';
+import { recordOutboxOperation } from '../../services/outbox.service.js';
 
 export async function getInventory(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -190,6 +191,23 @@ export async function createProduct(req: Request, res: Response, next: NextFunct
           },
         });
 
+        await recordOutboxOperation(tx, {
+          entityType: 'PRODUCT',
+          entityId: updated.id,
+          operationType: 'UPDATE',
+          payload: {
+            id: updated.id,
+            itemId: updated.itemId,
+            itemName: updated.itemName,
+            brand: updated.brand,
+            quantity: updated.quantity,
+            unitPrice: Number(updated.unitPrice),
+            buyingPrice: Number(updated.buyingPrice),
+            supplierCode: updated.supplierCode,
+            paymentMethod: updated.paymentMethod,
+          },
+        });
+
         return updated;
       });
 
@@ -244,15 +262,34 @@ export async function createProduct(req: Request, res: Response, next: NextFunct
         },
       });
 
-      await tx.stockMovement.create({
-        data: {
-          itemId: finalItemId,
-          supplierCode: supplierCode.trim(),
-          quantity: qty,
-          unitPrice: price,
-          buyingPrice: bPrice,
-          paymentMethod,
-          movedAt: now,
+      if (qty > 0) {
+        await tx.stockMovement.create({
+          data: {
+            itemId: finalItemId,
+            supplierCode: supplierCode.trim(),
+            quantity: qty,
+            unitPrice: price,
+            buyingPrice: bPrice,
+            paymentMethod,
+            movedAt: now,
+          },
+        });
+      }
+
+      await recordOutboxOperation(tx, {
+        entityType: 'PRODUCT',
+        entityId: product.id,
+        operationType: 'CREATE',
+        payload: {
+          id: product.id,
+          itemId: product.itemId,
+          itemName: product.itemName,
+          brand: product.brand,
+          quantity: product.quantity,
+          unitPrice: Number(product.unitPrice),
+          buyingPrice: Number(product.buyingPrice),
+          supplierCode: product.supplierCode,
+          paymentMethod: product.paymentMethod,
         },
       });
 
@@ -334,6 +371,23 @@ export async function updateProduct(req: Request, res: Response, next: NextFunct
         });
       }
 
+      await recordOutboxOperation(tx, {
+        entityType: 'PRODUCT',
+        entityId: prod.id,
+        operationType: 'UPDATE',
+        payload: {
+          id: prod.id,
+          itemId: prod.itemId,
+          itemName: prod.itemName,
+          brand: prod.brand,
+          quantity: prod.quantity,
+          unitPrice: Number(prod.unitPrice),
+          buyingPrice: Number(prod.buyingPrice),
+          supplierCode: prod.supplierCode,
+          paymentMethod: prod.paymentMethod,
+        },
+      });
+
       return prod;
     });
 
@@ -358,8 +412,17 @@ export async function updateProduct(req: Request, res: Response, next: NextFunct
 export async function deleteProduct(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const id = req.params.id as string;
-    await prisma.product.delete({
-      where: { id },
+    await prisma.$transaction(async (tx) => {
+      await tx.product.delete({
+        where: { id },
+      });
+
+      await recordOutboxOperation(tx, {
+        entityType: 'PRODUCT',
+        entityId: id,
+        operationType: 'DELETE',
+        payload: { id },
+      });
     });
 
     res.json({ success: true, message: 'Product deleted successfully.' });

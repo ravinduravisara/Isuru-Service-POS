@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { api } from '../../services/api';
 import { offlineSyncService, SyncStatus } from '../../services/offlineSyncService';
 import { offlineDb, PendingInvoice } from '../../db/offlineDb';
 import { getStorageStatus, StorageStatus } from '../../serviceWorkerRegistration';
@@ -71,6 +72,11 @@ export const SyncStatusBadge: React.FC = () => {
     setIsTriggering(true);
     try {
       await offlineSyncService.triggerSync();
+      try {
+        await api.post('/sync/trigger');
+      } catch {
+        // Backend offline or in local fallback
+      }
       await loadPendingList();
     } finally {
       setIsTriggering(false);

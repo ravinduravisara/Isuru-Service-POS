@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { prisma } from '../../config/prisma.js';
+import { recordOutboxOperation } from '../../services/outbox.service.js';
 
 export async function getCustomers(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -185,13 +186,30 @@ export async function createCustomer(req: Request, res: Response, next: NextFunc
 
     const cleanBankDetails = (bankDetails || '').trim();
 
-    const customer = await prisma.customer.create({
-      data: {
-        name: name.trim(),
-        phone: cleanPhone,
-        nic: cleanNic,
-        bankDetails: cleanBankDetails,
-      },
+    const customer = await prisma.$transaction(async (tx) => {
+      const c = await tx.customer.create({
+        data: {
+          name: name.trim(),
+          phone: cleanPhone,
+          nic: cleanNic,
+          bankDetails: cleanBankDetails,
+        },
+      });
+
+      await recordOutboxOperation(tx, {
+        entityType: 'CUSTOMER',
+        entityId: c.id,
+        operationType: 'CREATE',
+        payload: {
+          id: c.id,
+          name: c.name,
+          phone: c.phone,
+          nic: c.nic,
+          bankDetails: c.bankDetails,
+        },
+      });
+
+      return c;
     });
 
     res.status(201).json({
@@ -245,14 +263,31 @@ export async function updateCustomer(req: Request, res: Response, next: NextFunc
 
     const cleanBankDetails = (bankDetails || '').trim();
 
-    const customer = await prisma.customer.update({
-      where: { id },
-      data: {
-        name: name.trim(),
-        phone: cleanPhone,
-        nic: cleanNic,
-        bankDetails: cleanBankDetails,
-      },
+    const customer = await prisma.$transaction(async (tx) => {
+      const c = await tx.customer.update({
+        where: { id },
+        data: {
+          name: name.trim(),
+          phone: cleanPhone,
+          nic: cleanNic,
+          bankDetails: cleanBankDetails,
+        },
+      });
+
+      await recordOutboxOperation(tx, {
+        entityType: 'CUSTOMER',
+        entityId: c.id,
+        operationType: 'UPDATE',
+        payload: {
+          id: c.id,
+          name: c.name,
+          phone: c.phone,
+          nic: c.nic,
+          bankDetails: c.bankDetails,
+        },
+      });
+
+      return c;
     });
 
     res.json({
@@ -278,8 +313,17 @@ export async function updateCustomer(req: Request, res: Response, next: NextFunc
 export async function deleteCustomer(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const id = req.params.id as string;
-    await prisma.customer.delete({
-      where: { id },
+    await prisma.$transaction(async (tx) => {
+      await tx.customer.delete({
+        where: { id },
+      });
+
+      await recordOutboxOperation(tx, {
+        entityType: 'CUSTOMER',
+        entityId: id,
+        operationType: 'DELETE',
+        payload: { id },
+      });
     });
 
     res.json({ success: true, message: 'Customer deleted successfully.' });

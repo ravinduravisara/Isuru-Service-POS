@@ -303,4 +303,125 @@ describe('Phase E: Synchronization Engine & Idempotent API', () => {
     await prisma.invoiceItem.deleteMany({ where: { itemId: conflictItemCode } });
     await prisma.product.deleteMany({ where: { itemId: conflictItemCode } });
   });
+
+  it('LOCAL-FIRST: Creating an invoice locally creates an atomic SyncOutbox record', async () => {
+    const res = await request(app)
+      .post('/api/v1/invoices')
+      .set('Authorization', `Bearer ${authToken}`)
+      .send({
+        customerName: 'Local Outbox Customer',
+        customerPhone: '0711122334',
+        vehicleNo: 'WP-LOC-1234',
+        vehicleType: 'Car',
+        items: [
+          {
+            service: 'Local Oil Change',
+            itemId: testItemCode,
+            description: 'Local test filter',
+            qty: 1,
+            rate: 1500,
+            amount: 1500,
+          },
+        ],
+        discount: 0,
+        paymentMethod: 'Cash',
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.success).toBe(true);
+    const invoiceId = res.body.invoice.id;
+
+    // Verify outbox entry exists in PostgreSQL
+    const outboxOp = await prisma.syncOutbox.findFirst({
+      where: {
+        entityType: 'INVOICE',
+        entityId: invoiceId,
+      },
+    });
+
+    expect(outboxOp).toBeDefined();
+    expect(outboxOp?.status).toBe('PENDING');
+    expect(outboxOp?.operationType).toBe('CREATE');
+    const payload = JSON.parse(outboxOp!.payload);
+    expect(payload.customerName).toBe('Local Outbox Customer');
+
+    // Clean up
+    await prisma.syncOutbox.deleteMany({ where: { id: outboxOp!.id } });
+    await prisma.invoiceItem.deleteMany({ where: { invoiceId } });
+    await prisma.invoice.deleteMany({ where: { id: invoiceId } });
+  });
+
+  it('BATCH PUSH: POST /api/v1/sync/push accepts batch outbox operations and commits idempotently', async () => {
+    const pushOpId = crypto.randomUUID();
+    const pushBillNo = `INV-PUSH-${Date.now().toString().slice(-6)}`;
+
+    const batchPayload = {
+      deviceId: 'test-terminal-01',
+      operations: [
+        {
+          operationId: pushOpId,
+          entityType: 'INVOICE',
+          entityId: crypto.randomUUID(),
+          operationType: 'CREATE',
+          idempotencyKey: `idemp-${pushOpId}`,
+          payload: {
+            billNo: pushBillNo,
+            customerName: 'Batch Push Customer',
+            customerPhone: '0779988776',
+            vehicleNo: 'CAB-PUSH',
+            vehicleType: 'Van',
+            dateTime: new Date().toISOString(),
+            subtotalAmount: 1500,
+            discountAmount: 0,
+            totalAmount: 1500,
+            paymentMethod: 'Cash',
+            paymentStatus: 'Paid',
+            items: [
+              {
+                service: 'Batch Push Filter',
+                itemId: testItemCode,
+                qty: 1,
+                rate: 1500,
+                amount: 1500,
+              },
+            ],
+          },
+        },
+      ],
+    };
+
+    // First push: Should succeed with 200 and SYNCED
+    const res1 = await request(app)
+      .post('/api/v1/sync/push')
+      .send(batchPayload);
+
+    expect(res1.status).toBe(200);
+    expect(res1.body.success).toBe(true);
+    expect(res1.body.results[0].status).toBe('SYNCED');
+
+    // Second push with same payload: IDEMPOTENCY check
+    const res2 = await request(app)
+      .post('/api/v1/sync/push')
+      .send(batchPayload);
+
+    expect(res2.status).toBe(200);
+    expect(res2.body.results[0].status).toBe('SYNCED');
+    expect(res2.body.results[0].serverAcknowledgement).toContain('Already Processed');
+
+    // Clean up
+    await prisma.invoiceItem.deleteMany({ where: { itemId: testItemCode } });
+    await prisma.invoice.deleteMany({ where: { billNo: pushBillNo } });
+    await prisma.syncOperation.deleteMany({ where: { clientOpId: `idemp-${pushOpId}` } });
+  });
+
+  it('TWO-WAY PULL: GET /api/v1/sync/pull returns updated products and services', async () => {
+    const res = await request(app)
+      .get('/api/v1/sync/pull');
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(Array.isArray(res.body.products)).toBe(true);
+    expect(Array.isArray(res.body.services)).toBe(true);
+    expect(res.body.serverTime).toBeDefined();
+  });
 });
