@@ -70,19 +70,28 @@ export async function syncInvoice(req: Request, res: Response, next: NextFunctio
       const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
       const prefix = `INV-${dateStr}`;
 
-      const lastInvoice = await tx.invoice.findFirst({
-        where: { billNo: { startsWith: prefix } },
-        orderBy: { billNo: 'desc' },
+      const existingPrefixBills = await tx.invoice.findMany({
+        where: { billNo: { startsWith: `${prefix}-` } },
+        select: { billNo: true },
       });
 
-      let nextNum = 1;
-      if (lastInvoice && lastInvoice.billNo) {
-        const parts = lastInvoice.billNo.split('-');
-        if (parts.length === 3 && !isNaN(parseInt(parts[2], 10))) {
-          nextNum = parseInt(parts[2], 10) + 1;
+      let maxNum = 0;
+      for (const inv of existingPrefixBills) {
+        const parts = inv.billNo.split('-');
+        if (parts.length === 3) {
+          const num = parseInt(parts[2], 10);
+          if (!isNaN(num) && num > maxNum) {
+            maxNum = num;
+          }
         }
       }
-      const finalBillNo = `${prefix}-${String(nextNum).padStart(4, '0')}`;
+
+      let candidateNum = maxNum + 1;
+      let finalBillNo = `${prefix}-${String(candidateNum).padStart(4, '0')}`;
+      while (await tx.invoice.findUnique({ where: { billNo: finalBillNo } })) {
+        candidateNum++;
+        finalBillNo = `${prefix}-${String(candidateNum).padStart(4, '0')}`;
+      }
 
       // Process and lock items for stock deduction
       const processedItems: any[] = [];

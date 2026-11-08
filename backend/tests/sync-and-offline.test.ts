@@ -232,4 +232,75 @@ describe('Phase E: Synchronization Engine & Idempotent API', () => {
     await prisma.invoiceItem.deleteMany({ where: { itemId: uniquePrefix } });
     await prisma.product.deleteMany({ where: { itemId: dualCode } });
   });
+
+  it('Should reject sync invoice requests missing clientTxId or customer name with 400', async () => {
+    const resNoTx = await request(app)
+      .post('/api/v1/sync/invoices')
+      .set('Authorization', `Bearer ${authToken}`)
+      .send({
+        customerName: 'No Tx Customer',
+        vehicleNo: 'NO-TX',
+        items: [],
+      });
+    expect(resNoTx.status).toBe(400);
+    expect(resNoTx.body.error).toContain('clientTxId is required');
+
+    const resNoCust = await request(app)
+      .post('/api/v1/sync/invoices')
+      .set('Authorization', `Bearer ${authToken}`)
+      .send({
+        clientTxId: crypto.randomUUID(),
+        customerName: '',
+        vehicleNo: 'NO-CUST',
+        items: [],
+      });
+    expect(resNoCust.status).toBe(400);
+    expect(resNoCust.body.error).toContain('Customer name and vehicle number are required');
+  });
+
+  it('Should gracefully log conflict warnings without failing invoice when offline sold quantity exceeds stock', async () => {
+    const conflictItemCode = `CONFLICT-ITEM-${timestamp}`;
+    await prisma.product.create({
+      data: {
+        itemId: conflictItemCode,
+        itemName: 'Low Stock Item',
+        quantity: 1, // Only 1 available in cloud
+        unitPrice: 500,
+        buyingPrice: 300,
+        paymentMethod: 'Cash',
+      },
+    });
+
+    const clientTxId = crypto.randomUUID();
+    const res = await request(app)
+      .post('/api/v1/sync/invoices')
+      .set('Authorization', `Bearer ${authToken}`)
+      .send({
+        clientTxId,
+        customerName: 'Conflict Buyer',
+        vehicleNo: 'CAB-CONFLICT',
+        items: [
+          {
+            service: 'Low Stock Item',
+            itemId: conflictItemCode,
+            qty: 5, // Sold 5 while offline
+            rate: 500,
+            amount: 2500,
+          },
+        ],
+        subtotalAmount: 2500,
+        discountAmount: 0,
+        totalAmount: 2500,
+        paymentMethod: 'Cash',
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.success).toBe(true);
+    expect(res.body.conflicts.length).toBeGreaterThan(0);
+    expect(res.body.conflicts[0]).toContain('offline sold 5, but current stock was 1');
+
+    // Clean up
+    await prisma.invoiceItem.deleteMany({ where: { itemId: conflictItemCode } });
+    await prisma.product.deleteMany({ where: { itemId: conflictItemCode } });
+  });
 });

@@ -218,7 +218,7 @@ export const BillingPage: React.FC = () => {
     setCustomerSearchQuery(cust.name);
     setIsCustomerDropdownOpen(false);
 
-    // Fetch vehicles for this customer
+    // Fetch vehicles for this customer with offline fallback
     try {
       const res = await api.get(`/customers/${cust.id}/vehicles`);
       const vList: Vehicle[] = res.data.vehicles || [];
@@ -228,7 +228,27 @@ export const BillingPage: React.FC = () => {
         setVehicleType(vList[0].vehicleType);
       }
     } catch (err) {
-      console.error('Failed to load customer vehicles', err);
+      console.warn('Network customer vehicle fetch failed, checking offline cache:', err);
+      try {
+        const cachedVeh = await offlineDb.cachedVehicles
+          .where('customerId')
+          .equals(cust.id)
+          .toArray();
+        if (cachedVeh.length > 0) {
+          const vList: Vehicle[] = cachedVeh.map((v) => ({
+            id: v.id,
+            customerId: v.customerId,
+            vehicleNo: v.vehicleNo,
+            vehicleType: v.vehicleType as VehicleType,
+            createdAt: v.updatedAt || '',
+          }));
+          setCustomerVehicles(vList);
+          setVehicleNo(vList[0].vehicleNo);
+          setVehicleType(vList[0].vehicleType);
+        }
+      } catch {
+        // Non-blocking
+      }
     }
   };
 

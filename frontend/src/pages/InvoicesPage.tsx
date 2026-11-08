@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/api';
 import { Invoice, PaymentMethod } from '../types';
+import { offlineDb } from '../db/offlineDb';
 import {
   FileText,
   Search,
@@ -43,6 +44,8 @@ export const InvoicesPage: React.FC = () => {
     null
   );
 
+  const [isOfflineMode, setIsOfflineMode] = useState(false);
+
   useEffect(() => {
     fetchInvoices();
   }, [search, paymentMethod, creditorsOnly, fromDate, toDate]);
@@ -62,8 +65,64 @@ export const InvoicesPage: React.FC = () => {
       if (res.data.summary) {
         setSummary(res.data.summary);
       }
+      setIsOfflineMode(false);
     } catch (err) {
-      console.error('Failed to fetch invoices', err);
+      console.warn('Network invoice fetch failed. Falling back to offline pending invoices:', err);
+      setIsOfflineMode(true);
+      try {
+        const pending = await offlineDb.pendingInvoices.toArray();
+        let filtered = pending;
+        if (search.trim()) {
+          const s = search.trim().toLowerCase();
+          filtered = filtered.filter(
+            (i) =>
+              i.billNo.toLowerCase().includes(s) ||
+              i.customerName.toLowerCase().includes(s) ||
+              i.vehicleNo.toLowerCase().includes(s)
+          );
+        }
+        if (paymentMethod && paymentMethod !== 'All') {
+          filtered = filtered.filter((i) => i.paymentMethod === paymentMethod);
+        }
+
+        const mapped: Invoice[] = filtered.map((p) => ({
+          id: p.id,
+          billNo: p.finalBillNo || p.billNo,
+          customerId: p.customerId || '',
+          customerName: p.customerName,
+          customerPhone: p.customerPhone,
+          vehicleId: p.vehicleId || '',
+          vehicleNo: p.vehicleNo,
+          vehicleType: p.vehicleType,
+          dateTime: p.dateTime,
+          subtotalAmount: p.subtotalAmount,
+          discountAmount: p.discountAmount,
+          totalAmount: p.totalAmount,
+          paymentMethod: p.paymentMethod as any,
+          paymentStatus: p.paymentStatus as any,
+          isProvisional: p.isProvisional,
+          items: p.items.map((it) => ({
+            service: it.service,
+            itemId: it.itemId,
+            description: it.description,
+            qty: it.qty,
+            rate: it.rate,
+            amount: it.amount,
+          })),
+        }));
+
+        setInvoices(mapped);
+        const grandTotal = mapped.reduce((sum, i) => sum + i.totalAmount, 0);
+        setSummary({
+          count: mapped.length,
+          grandTotal,
+          cashTotal: mapped.filter((i) => i.paymentMethod === 'Cash').reduce((sum, i) => sum + i.totalAmount, 0),
+          chequeTotal: mapped.filter((i) => i.paymentMethod === 'Cheque').reduce((sum, i) => sum + i.totalAmount, 0),
+          creditTotal: mapped.filter((i) => i.paymentMethod === 'Credit').reduce((sum, i) => sum + i.totalAmount, 0),
+        });
+      } catch (dbErr) {
+        console.error('Failed to load local offline invoices:', dbErr);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -74,7 +133,37 @@ export const InvoicesPage: React.FC = () => {
       const res = await api.get(`/invoices/${id}`);
       setSelectedInvoice(res.data.invoice);
     } catch (err) {
-      console.error('Failed to load invoice', err);
+      // Offline fallback: find in cached invoices or pending
+      const foundPending = await offlineDb.pendingInvoices.get(id);
+      if (foundPending) {
+        setSelectedInvoice({
+          id: foundPending.id,
+          billNo: foundPending.finalBillNo || foundPending.billNo,
+          customerId: foundPending.customerId || '',
+          customerName: foundPending.customerName,
+          customerPhone: foundPending.customerPhone,
+          vehicleId: foundPending.vehicleId || '',
+          vehicleNo: foundPending.vehicleNo,
+          vehicleType: foundPending.vehicleType,
+          dateTime: foundPending.dateTime,
+          subtotalAmount: foundPending.subtotalAmount,
+          discountAmount: foundPending.discountAmount,
+          totalAmount: foundPending.totalAmount,
+          paymentMethod: foundPending.paymentMethod as any,
+          paymentStatus: foundPending.paymentStatus as any,
+          isProvisional: foundPending.isProvisional,
+          items: foundPending.items.map((it) => ({
+            service: it.service,
+            itemId: it.itemId,
+            description: it.description,
+            qty: it.qty,
+            rate: it.rate,
+            amount: it.amount,
+          })),
+        });
+      } else {
+        console.error('Failed to load invoice', err);
+      }
     }
   };
 

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/api';
 import { Customer, Vehicle, Invoice, VehicleType } from '../types';
+import { offlineDb } from '../db/offlineDb';
 import {
   Users,
   Search,
@@ -79,7 +80,33 @@ export const CustomersPage: React.FC = () => {
       const res = await api.get(`/customers?search=${encodeURIComponent(search.trim())}`);
       setCustomers(res.data.customers || []);
     } catch (err) {
-      console.error('Failed to load customers', err);
+      console.warn('Network customer fetch failed. Falling back to offline cache:', err);
+      try {
+        const cached = await offlineDb.cachedCustomers.toArray();
+        let filtered = cached;
+        if (search.trim()) {
+          const s = search.trim().toLowerCase();
+          filtered = filtered.filter(
+            (c) =>
+              c.name.toLowerCase().includes(s) ||
+              c.phone.toLowerCase().includes(s) ||
+              (c.nic && c.nic.toLowerCase().includes(s))
+          );
+        }
+        setCustomers(
+          filtered.map((c) => ({
+            id: c.id,
+            name: c.name,
+            phone: c.phone,
+            idNo: c.nic,
+            bankDetails: c.bankDetails,
+            createdAt: c.updatedAt || '',
+            vehicles: [],
+          }))
+        );
+      } catch (dbErr) {
+        console.error('Failed to load cached customers:', dbErr);
+      }
     } finally {
       setIsLoading(false);
     }

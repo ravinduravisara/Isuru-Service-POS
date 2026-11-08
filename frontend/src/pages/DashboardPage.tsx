@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../services/api';
 import { DashboardMetrics, Invoice } from '../types';
+import { offlineDb } from '../db/offlineDb';
 import {
   Users,
   Car,
@@ -43,6 +44,7 @@ export const DashboardPage: React.FC = () => {
     paymentMethods: [],
   });
   const [isLoading, setIsLoading] = useState(true);
+  const [isOfflineMode, setIsOfflineMode] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
 
   useEffect(() => {
@@ -60,8 +62,67 @@ export const DashboardPage: React.FC = () => {
       setMetrics(mRes.data.metrics);
       setRecentInvoices(rRes.data.invoices || []);
       setChartData(cRes.data.charts || { dailyTrend: [], paymentMethods: [] });
+      setIsOfflineMode(false);
     } catch (err) {
-      console.error('Failed to load dashboard data:', err);
+      console.warn('Network dashboard fetch failed. Falling back to local offline IndexedDB metrics:', err);
+      setIsOfflineMode(true);
+      // Fallback from local IndexedDB
+      try {
+        const custCount = await offlineDb.cachedCustomers.count();
+        const vehCount = await offlineDb.cachedVehicles.count();
+        const prodCount = await offlineDb.cachedProducts.count();
+        const lowStock = await offlineDb.cachedProducts.filter((p) => p.quantity <= 5).count();
+        const pendingInv = await offlineDb.pendingInvoices.toArray();
+
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const todayInvoices = pendingInv.filter((i) => (i.dateTime || i.createdAt).startsWith(todayStr));
+        const todaySales = todayInvoices.reduce((sum, i) => sum + (Number(i.totalAmount) || 0), 0);
+
+        setMetrics({
+          customers: custCount,
+          vehicles: vehCount,
+          invoices: pendingInv.length,
+          inventoryItems: prodCount,
+          revenue: todaySales,
+          suppliers: 0,
+          pendingCreditAmount: 0,
+          pendingCreditCount: 0,
+          lowStockItems: lowStock,
+        });
+
+        setRecentInvoices(
+          pendingInv
+            .slice(-10)
+            .reverse()
+            .map((p) => ({
+              id: p.id,
+              billNo: p.finalBillNo || p.billNo,
+              customerId: p.customerId || '',
+              customerName: p.customerName,
+              customerPhone: p.customerPhone,
+              vehicleId: p.vehicleId || '',
+              vehicleNo: p.vehicleNo,
+              vehicleType: p.vehicleType,
+              dateTime: p.dateTime,
+              subtotalAmount: p.subtotalAmount,
+              discountAmount: p.discountAmount,
+              totalAmount: p.totalAmount,
+              paymentMethod: p.paymentMethod as any,
+              paymentStatus: p.paymentStatus as any,
+              isProvisional: p.isProvisional,
+              items: p.items.map((it) => ({
+                service: it.service,
+                itemId: it.itemId,
+                description: it.description,
+                qty: it.qty,
+                rate: it.rate,
+                amount: it.amount,
+              })),
+            }))
+        );
+      } catch (dbErr) {
+        console.error('Failed to load local offline metrics:', dbErr);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -91,6 +152,19 @@ export const DashboardPage: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      {/* Offline Mode Alert Banner */}
+      {isOfflineMode && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3 sm:p-4 flex items-center gap-3 text-amber-900 text-xs">
+          <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
+          <div>
+            <p className="font-bold text-amber-950">Offline Dashboard Mode Active</p>
+            <p className="text-slate-600 mt-0.5">
+              Showing locally cached metrics and unsynchronized outbox invoices. Cloud financial analytics will update once reconnected.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Top Banner / Alerts if any */}
       {(metrics?.lowStockItems || 0) > 0 && (
         <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3.5 sm:p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">

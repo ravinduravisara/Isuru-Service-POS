@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/api';
 import { Service, VehicleType } from '../types';
+import { offlineDb } from '../db/offlineDb';
 import {
   Wrench,
   Search,
@@ -169,7 +170,31 @@ export const ServicesPage: React.FC = () => {
       const res = await api.get(`/services?${params.toString()}`);
       setServices(res.data.services || []);
     } catch (err) {
-      console.error('Failed to load services', err);
+      console.warn('Network services fetch failed. Falling back to offline cache:', err);
+      try {
+        const cached = await offlineDb.cachedServices.toArray();
+        let filtered = cached;
+        if (selectedCategory !== 'All') {
+          filtered = filtered.filter((s) => s.category.toLowerCase() === selectedCategory.toLowerCase());
+        }
+        if (search.trim()) {
+          const s = search.trim().toLowerCase();
+          filtered = filtered.filter(
+            (sv) => sv.name.toLowerCase().includes(s) || (sv.description && sv.description.toLowerCase().includes(s))
+          );
+        }
+        setServices(
+          filtered.map((s) => ({
+            id: s.id,
+            category: s.category as VehicleType,
+            name: s.name,
+            price: s.price,
+            description: s.description || '',
+          }))
+        );
+      } catch (dbErr) {
+        console.error('Failed to load cached services:', dbErr);
+      }
     } finally {
       setIsLoading(false);
     }
