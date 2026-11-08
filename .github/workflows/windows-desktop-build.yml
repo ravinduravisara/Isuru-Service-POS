@@ -15,6 +15,7 @@ jobs:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       ELECTRON_MIRROR: "https://npmmirror.com/mirrors/electron/"
+      ELECTRON_BUILDER_BINARIES_MIRROR: "https://npmmirror.com/mirrors/electron-builder-binaries/"
     defaults:
       run:
         shell: bash
@@ -97,7 +98,7 @@ jobs:
           cd backend
           npm prune --omit=dev
 
-      - name: Pre-cache Windows Electron Binary
+      - name: Pre-cache Windows Electron Binary & Builder Tools
         shell: pwsh
         run: |
           $electronVersion = "33.2.1"
@@ -153,7 +154,46 @@ jobs:
               Copy-Item $shasumTarget (Join-Path $dir "SHASUMS256.txt") -Force -ErrorAction SilentlyContinue
             }
           }
-          Write-Host "✔ Electron binary and checksum ready across all builder caches."
+
+          # Pre-cache winCodeSign-2.6.0
+          $wcsDir = "$env:LOCALAPPDATA\electron-builder\Cache\winCodeSign"
+          $wcsTargetDir = "$wcsDir\winCodeSign-2.6.0"
+          New-Item -ItemType Directory -Force -Path $wcsTargetDir | Out-Null
+          $wcs7z = "$wcsDir\winCodeSign-2.6.0.7z"
+          try {
+            Invoke-WebRequest -Uri "https://npmmirror.com/mirrors/electron-builder-binaries/winCodeSign-2.6.0/winCodeSign-2.6.0.7z" -OutFile $wcs7z -TimeoutSec 60
+            & "7z" x $wcs7z "-o$wcsTargetDir" -y | Out-Null
+            Write-Host "✔ winCodeSign pre-cached and unpacked at: $wcsTargetDir"
+          } catch {
+            Write-Warning "winCodeSign pre-cache warning: $_"
+          }
+
+          # Pre-cache nsis-3.0.4.1
+          $nsisDir = "$env:LOCALAPPDATA\electron-builder\Cache\nsis"
+          $nsisTargetDir = "$nsisDir\nsis-3.0.4.1"
+          New-Item -ItemType Directory -Force -Path $nsisTargetDir | Out-Null
+          $nsis7z = "$nsisDir\nsis-3.0.4.1.7z"
+          try {
+            Invoke-WebRequest -Uri "https://npmmirror.com/mirrors/electron-builder-binaries/nsis-3.0.4.1/nsis-3.0.4.1.7z" -OutFile $nsis7z -TimeoutSec 60
+            & "7z" x $nsis7z "-o$nsisTargetDir" -y | Out-Null
+            Write-Host "✔ nsis pre-cached and unpacked at: $nsisTargetDir"
+          } catch {
+            Write-Warning "nsis pre-cache warning: $_"
+          }
+
+          # Pre-cache nsis-resources-3.4.1
+          $nsisResDir = "$env:LOCALAPPDATA\electron-builder\Cache\nsis\nsis-resources-3.4.1"
+          New-Item -ItemType Directory -Force -Path $nsisResDir | Out-Null
+          $nsisRes7z = "$env:LOCALAPPDATA\electron-builder\Cache\nsis\nsis-resources-3.4.1.7z"
+          try {
+            Invoke-WebRequest -Uri "https://npmmirror.com/mirrors/electron-builder-binaries/nsis-resources-3.4.1/nsis-resources-3.4.1.7z" -OutFile $nsisRes7z -TimeoutSec 60
+            & "7z" x $nsisRes7z "-o$nsisResDir" -y | Out-Null
+            Write-Host "✔ nsis-resources pre-cached and unpacked at: $nsisResDir"
+          } catch {
+            Write-Warning "nsis-resources pre-cache warning: $_"
+          }
+
+          Write-Host "✔ Electron binary and builder tools ready across all local caches."
 
       - name: Package Windows NSIS Installer (electron-builder)
         run: |
