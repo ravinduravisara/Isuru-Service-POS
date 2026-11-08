@@ -1,0 +1,26 @@
+{
+  "name": "isuru-pos-desktop",
+  "version": "1.0.0",
+  "description": "ISURU Service Center POS - Windows Desktop Application",
+  "main": "dist/electron/main.js",
+  "type": "module",
+  "scripts": {
+    "build:electron": "tsc -p tsconfig.json",
+    "prebuild": "node scripts/prepare-build.mjs",
+    "dist:win": "npm run build:electron && npm run prebuild && electron-builder --win nsis --config electron-builder.yml",
+    "download:deps": "node scripts/download-windows-deps.mjs"
+  },
+  "author": "ISURU Service Center",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "fs-extra": "^11.2.0",
+    "typescript": "^5.7.3"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7"
+  }
+}

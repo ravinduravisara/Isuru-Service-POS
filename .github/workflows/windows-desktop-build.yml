@@ -1,0 +1,96 @@
+name: Windows Desktop Installer Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ windows-setup, main ]
+    tags: [ 'v*-win' ]
+
+concurrency:
+  group: windows-desktop-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows-installer:
+    name: Build ISURU-POS-Setup.exe (Windows x64)
+    runs-on: windows-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install Root, Backend & Frontend Dependencies
+        run: |
+          npm ci || npm install
+          cd backend && npm ci || npm install
+          cd ../frontend && npm ci || npm install
+
+      - name: Generate Prisma Windows Engine
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/isuru_pos
+        run: |
+          cd backend
+          npx prisma generate
+
+      - name: Build Express Backend
+        run: |
+          cd backend
+          npm run build
+
+      - name: Build React Frontend Assets
+        run: |
+          cd frontend
+          npm run build
+
+      - name: Install Desktop Packaging Dependencies
+        run: |
+          cd desktop
+          npm install
+
+      - name: Download & Extract Portable Windows PostgreSQL 16
+        run: |
+          cd desktop
+          node scripts/download-windows-deps.mjs
+
+      - name: Compile Electron Main Process & Pre-build Staging
+        run: |
+          cd desktop
+          npm run build:electron
+          node scripts/prepare-build.mjs
+
+      - name: Package Windows NSIS Installer (electron-builder)
+        run: |
+          cd desktop
+          npx electron-builder --win nsis --config electron-builder.yml
+
+      - name: Verify Installer Artifact
+        shell: pwsh
+        run: |
+          $installer = "desktop\dist-installer\ISURU-POS-Setup.exe"
+          if (!(Test-Path $installer)) {
+            Write-Error "Fatal: Expected installer was not generated at $installer"
+            exit 1
+          }
+          $hash = (Get-FileHash -Path $installer -Algorithm SHA256).Hash
+          Set-Content -Path "desktop\dist-installer\ISURU-POS-Setup.exe.sha256" -Value $hash
+          Write-Host "=========================================================="
+          Write-Host "✔ Windows Installer successfully built: $installer"
+          Write-Host "✔ SHA-256 Checksum: $hash"
+          Write-Host "=========================================================="
+
+      - name: Upload Windows Installer Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ISURU-POS-Windows-Installer
+          path: |
+            desktop/dist-installer/ISURU-POS-Setup.exe
+            desktop/dist-installer/ISURU-POS-Setup.exe.sha256
+          if-no-files-found: error
+          retention-days: 30

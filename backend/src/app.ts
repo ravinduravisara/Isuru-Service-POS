@@ -3,8 +3,13 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import morgan from 'morgan';
 import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
 import { ENV } from './config/env.js';
 import { errorHandler } from './middleware/errorHandler.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Route imports
 import { authRouter } from './modules/auth/auth.routes.js';
@@ -96,6 +101,18 @@ app.use('/api/v1/invoices', invoicesRouter);
 app.use('/api/v1/profit-statement', profitRouter);
 app.use('/api/v1/settings', settingsRouter);
 app.use('/api/v1/sync', syncRouter);
+
+// Serve compiled React SPA if present (Desktop Electron standalone or production bundle)
+const clientDistDir = process.env.CLIENT_BUILD_DIR || path.resolve(__dirname, '../../frontend/dist');
+if (fs.existsSync(clientDistDir)) {
+  app.use(express.static(clientDistDir));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/uploads')) {
+      return next();
+    }
+    res.sendFile(path.join(clientDistDir, 'index.html'));
+  });
+}
 
 // Centralized error handling
 app.use(errorHandler);

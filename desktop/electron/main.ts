@@ -1,0 +1,293 @@
+// ==============================================================================
+// ISURU SERVICE CENTER POS: ELECTRON MAIN PROCESS
+// ==============================================================================
+import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+import { ProcessManager } from './processManager.js';
+import { PrintManager } from './printManager.js';
+import type { PrintInvoiceOptions } from './types.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+let splashWindow: BrowserWindow | null = null;
+let mainWindow: BrowserWindow | null = null;
+let isQuitting = false;
+
+// Ensure single instance lock so multiple copies don't fight over PostgreSQL ports
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+}
+
+/**
+ * Create splash screen displayed during database and backend startup.
+ */
+function createSplashWindow(): BrowserWindow {
+  const iconPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'assets', 'icon.png')
+    : path.join(__dirname, '..', '..', 'resources', 'assets', 'icon.png');
+
+  const splash = new BrowserWindow({
+    width: 480,
+    height: 380,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    resizable: false,
+    center: true,
+    icon: fs.existsSync(iconPath) ? iconPath : undefined,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+
+  const splashPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'assets', 'splash.html')
+    : path.join(__dirname, '..', '..', 'resources', 'assets', 'splash.html');
+
+  if (fs.existsSync(splashPath)) {
+    splash.loadFile(splashPath);
+  } else {
+    splash.loadURL(
+      `data:text/html,<html><body style="background:#0f172a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;"><h3>Starting ISURU POS...</h3></body></html>`
+    );
+  }
+
+  return splash;
+}
+
+/**
+ * Load saved window geometry.
+ */
+function getSavedWindowBounds(): { width: number; height: number; x?: number; y?: number } {
+  const defaultBounds = { width: 1400, height: 900 };
+  try {
+    const boundsFile = path.join(app.getPath('userData'), 'window-bounds.json');
+    if (fs.existsSync(boundsFile)) {
+      return JSON.parse(fs.readFileSync(boundsFile, 'utf8'));
+    }
+  } catch {
+    // Ignore
+  }
+  return defaultBounds;
+}
+
+/**
+ * Save window geometry on change.
+ */
+function saveWindowBounds(win: BrowserWindow) {
+  if (win.isMaximized() || win.isMinimized() || win.isFullScreen()) return;
+  try {
+    const boundsFile = path.join(app.getPath('userData'), 'window-bounds.json');
+    fs.writeFileSync(boundsFile, JSON.stringify(win.getBounds(), null, 2));
+  } catch {
+    // Ignore
+  }
+}
+
+/**
+ * Create primary application window.
+ */
+function createMainWindow(targetUrl: string): BrowserWindow {
+  const bounds = getSavedWindowBounds();
+  const iconPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'assets', 'icon.png')
+    : path.join(__dirname, '..', '..', 'resources', 'assets', 'icon.png');
+
+  const win = new BrowserWindow({
+    ...bounds,
+    minWidth: 1024,
+    minHeight: 700,
+    title: 'ISURU Service POS',
+    backgroundColor: '#0f172a',
+    show: false,
+    icon: fs.existsSync(iconPath) ? iconPath : undefined,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false,
+    },
+  });
+
+  // Native window control tracking
+  win.on('resize', () => saveWindowBounds(win));
+  win.on('move', () => saveWindowBounds(win));
+
+  // Security: Prevent navigation away from trusted local backend
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('http:') || url.startsWith('https:')) {
+      shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+
+  win.loadURL(targetUrl);
+
+  win.once('ready-to-show', () => {
+    if (splashWindow) {
+      splashWindow.close();
+      splashWindow = null;
+    }
+    win.show();
+    win.focus();
+  });
+
+  win.on('closed', () => {
+    mainWindow = null;
+  });
+
+  return win;
+}
+
+/**
+ * Register secure IPC handlers.
+ */
+function registerIpcHandlers() {
+  ipcMain.on('window-minimize', () => {
+    mainWindow?.minimize();
+  });
+
+  ipcMain.on('window-maximize', () => {
+    if (mainWindow?.isMaximized()) {
+      mainWindow.unmaximize();
+    } else {
+      mainWindow?.maximize();
+    }
+  });
+
+  ipcMain.on('window-close', () => {
+    mainWindow?.close();
+  });
+
+  ipcMain.handle('window-is-maximized', () => {
+    return mainWindow ? mainWindow.isMaximized() : false;
+  });
+
+  ipcMain.handle('get-printers', async () => {
+    if (!mainWindow) return [];
+    return PrintManager.getPrinters(mainWindow);
+  });
+
+  ipcMain.handle('print-invoice', async (_, options?: PrintInvoiceOptions) => {
+    if (!mainWindow) return { success: false, error: 'Window not active.' };
+    return PrintManager.printInvoice(mainWindow, options);
+  });
+
+  ipcMain.handle('get-diagnostics', async () => {
+    const status = ProcessManager.getStatus();
+    return {
+      appVersion: app.getVersion(),
+      platform: process.platform,
+      arch: process.arch,
+      backendUrl: `http://127.0.0.1:${status.backendPort}`,
+      backendStatus: status.backendStatus,
+      postgresStatus: status.postgresStatus,
+      postgresPort: status.postgresPort,
+      programDataDir: status.dataDir,
+      isOnline: navigator?.onLine ?? true,
+    };
+  });
+
+  ipcMain.handle('open-external', async (_, url: string) => {
+    if (url && (url.startsWith('https://') || url.startsWith('http://'))) {
+      await shell.openExternal(url);
+    }
+  });
+
+  ipcMain.handle('export-database-backup', async (_, targetPath?: string) => {
+    try {
+      let dest = targetPath;
+      if (!dest && mainWindow) {
+        const res = await dialog.showSaveDialog(mainWindow, {
+          title: 'Export ISURU POS Database Backup',
+          defaultPath: `isuru_pos_backup_${new Date().toISOString().slice(0, 10)}.sql`,
+          filters: [{ name: 'SQL Dump File', extensions: ['sql'] }],
+        });
+        if (res.canceled || !res.filePath) return { success: false };
+        dest = res.filePath;
+      }
+
+      if (!dest) return { success: false };
+      // Copy latest dump from ProgramData backups
+      const dataDir = ProcessManager.getDataDirectory();
+      const backupsDir = path.join(dataDir, 'backups');
+      const files = fs.readdirSync(backupsDir).filter((f) => f.endsWith('.sql.gz') || f.endsWith('.sql'));
+
+      if (files.length === 0) {
+        return { success: false, error: 'No recent database backup found in data directory.' };
+      }
+
+      const latest = path.join(backupsDir, files[files.length - 1]);
+      fs.copyFileSync(latest, dest);
+      return { success: true, filePath: dest };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  });
+}
+
+/**
+ * Application Lifecycle Initialization
+ */
+app.whenReady().then(async () => {
+  splashWindow = createSplashWindow();
+  registerIpcHandlers();
+
+  try {
+    // 1. Initialize local PostgreSQL data cluster
+    await ProcessManager.initializePostgresCluster((msg) => {
+      console.log(`[Startup] ${msg}`);
+    });
+
+    // 2. Start local PostgreSQL engine
+    await ProcessManager.startPostgres((msg) => {
+      console.log(`[Startup] ${msg}`);
+    });
+
+    // 3. Start local Express API backend
+    const backendUrl = await ProcessManager.startBackend((msg) => {
+      console.log(`[Startup] ${msg}`);
+    });
+
+    // 4. Create and show primary application window
+    mainWindow = createMainWindow(backendUrl);
+  } catch (startupError: any) {
+    console.error('[Startup Fatal Error]', startupError);
+    dialog.showErrorBox(
+      'ISURU POS Startup Error',
+      `Failed to initialize local POS engine: ${startupError.message}\n\nPlease check Windows event logs or run diagnostics.`
+    );
+    app.quit();
+  }
+});
+
+// Clean shutdown handlers
+app.on('before-quit', async (event) => {
+  if (!isQuitting) {
+    event.preventDefault();
+    isQuitting = true;
+    try {
+      await ProcessManager.stopAll();
+    } finally {
+      app.exit(0);
+    }
+  }
+});
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});

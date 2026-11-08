@@ -1,0 +1,49 @@
+# ==============================================================================
+# ISURU SERVICE CENTER POS: ELECTRON BUILDER CONFIGURATION
+# ==============================================================================
+appId: com.isuru.pos.desktop
+productName: ISURU Service POS
+copyright: Copyright © 2026 ISURU Service Center
+
+directories:
+  output: dist-installer
+  buildResources: resources
+
+files:
+  - dist/**/*
+  - package.json
+
+extraResources:
+  - from: resources/assets
+    to: assets
+  - from: ../backend/dist
+    to: backend/dist
+  - from: ../backend/prisma
+    to: backend/prisma
+  - from: ../backend/node_modules
+    to: backend/node_modules
+  - from: ../frontend/dist
+    to: frontend/dist
+  - from: windows/postgres/pgsql
+    to: pgsql
+    filter:
+      - "**/*"
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: "ISURU-POS-Setup.${ext}"
+  requestedExecutionLevel: asInvoker
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: "ISURU Service POS"
+  include: windows/installer/installer.nsh
+  uninstallDisplayName: "ISURU Service POS"
+  deleteAppDataOnUninstall: false
