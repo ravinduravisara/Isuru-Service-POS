@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/api';
 import { Product, Supplier } from '../types';
+import { offlineDb } from '../db/offlineDb';
 import {
   Boxes,
   Search,
@@ -128,7 +129,46 @@ export const InventoryPage: React.FC = () => {
         setSummary(res.data.summary);
       }
     } catch (err) {
-      console.error('Failed to load inventory', err);
+      console.warn('Network inventory fetch failed. Falling back to offline cache:', err);
+      try {
+        const cached = await offlineDb.cachedProducts.toArray();
+        let filtered = cached;
+        if (search.trim()) {
+          const s = search.trim().toLowerCase();
+          filtered = filtered.filter(
+            (p) =>
+              p.itemId.toLowerCase().includes(s) ||
+              p.itemName.toLowerCase().includes(s) ||
+              p.brand.toLowerCase().includes(s)
+          );
+        }
+        if (selectedCategory !== 'All') {
+          filtered = filtered.filter((p) => p.itemName.toLowerCase() === selectedCategory.toLowerCase());
+        }
+        setProducts(
+          filtered.map((p) => ({
+            id: p.id,
+            itemId: p.itemId,
+            itemName: p.itemName,
+            brand: p.brand,
+            quantity: p.quantity,
+            unitPrice: p.unitPrice,
+            buyingPrice: p.buyingPrice,
+            supplierCode: p.supplierCode,
+            paymentMethod: 'Cash',
+            updatedAt: p.updatedAt || '',
+            sellingValue: p.quantity * p.unitPrice,
+            costValue: p.quantity * p.buyingPrice,
+          }))
+        );
+        const totalItems = filtered.reduce((sum, p) => sum + p.quantity, 0);
+        const totalSellingValue = filtered.reduce((sum, p) => sum + p.quantity * p.unitPrice, 0);
+        const totalCostValue = filtered.reduce((sum, p) => sum + p.quantity * p.buyingPrice, 0);
+        const lowStockCount = filtered.filter((p) => p.quantity <= 5).length;
+        setSummary({ totalItems, totalSellingValue, totalCostValue, lowStockCount });
+      } catch (dbErr) {
+        console.error('Failed to load cached inventory:', dbErr);
+      }
     } finally {
       setIsLoading(false);
     }

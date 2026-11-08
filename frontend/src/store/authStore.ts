@@ -56,18 +56,55 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   checkAuth: async () => {
     const token = localStorage.getItem('isuru_auth_token');
+    const storedUserStr = localStorage.getItem('isuru_auth_user');
     if (!token) {
       set({ user: null, token: null });
       return;
     }
+
+    // Check JWT expiration safely on client
     try {
-      const res = await api.get('/auth/me');
-      set({ user: res.data.user });
-      localStorage.setItem('isuru_auth_user', JSON.stringify(res.data.user));
+      const payloadBase64 = token.split('.')[1];
+      if (payloadBase64) {
+        const decoded = JSON.parse(atob(payloadBase64));
+        if (decoded.exp && Date.now() >= decoded.exp * 1000) {
+          // Token has expired
+          localStorage.removeItem('isuru_auth_token');
+          localStorage.removeItem('isuru_auth_user');
+          set({ user: null, token: null });
+          return;
+        }
+      }
     } catch {
+      // Malformed token
       localStorage.removeItem('isuru_auth_token');
       localStorage.removeItem('isuru_auth_user');
       set({ user: null, token: null });
+      return;
+    }
+
+    try {
+      const res = await api.get('/auth/me');
+      set({ user: res.data.user, token });
+      localStorage.setItem('isuru_auth_user', JSON.stringify(res.data.user));
+    } catch (err: any) {
+      // If server explicitly rejected credentials (401 / 403), invalidate session
+      if (err.response?.status === 401 || err.response?.status === 403) {
+        localStorage.removeItem('isuru_auth_token');
+        localStorage.removeItem('isuru_auth_user');
+        set({ user: null, token: null });
+        return;
+      }
+
+      // If network failure / offline mode: retain pre-authorized session for offline POS billing
+      if (storedUserStr) {
+        try {
+          const cachedUser = JSON.parse(storedUserStr);
+          set({ user: cachedUser, token });
+        } catch {
+          set({ user: null, token: null });
+        }
+      }
     }
   },
 

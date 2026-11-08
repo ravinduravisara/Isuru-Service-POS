@@ -1,30 +1,73 @@
 // ==============================================================================
 // ISURU SERVICE CENTER POS: OFFLINE SYNCHRONIZATION ENGINE & NETWORK MONITOR
 // ==============================================================================
-import { offlineDb, PendingInvoice, SyncQueueItem, CachedProduct, CachedService, CachedCustomer } from '../db/offlineDb';
+import {
+  offlineDb,
+  PendingInvoice,
+  SyncQueueItem,
+  CachedProduct,
+  CachedService,
+  CachedCustomer,
+  LocalStockMovement,
+} from '../db/offlineDb';
 import { api } from './api';
 
-export type SyncStatus = 'ONLINE' | 'OFFLINE' | 'SYNCING' | 'SYNC_ERROR';
+export type SyncStatus = 'ONLINE' | 'OFFLINE' | 'SYNCING' | 'SYNC_ERROR' | 'CONFLICT';
 
 type StatusListener = (status: SyncStatus, pendingCount: number) => void;
+
+// ------------------------------------------------------------------------------
+// Web Crypto Helpers: SHA-256 Checksum, PBKDF2 Key Derivation & AES-GCM
+// ------------------------------------------------------------------------------
+async function calculateSha256(text: string): Promise<string> {
+  const enc = new TextEncoder();
+  const buffer = await crypto.subtle.digest('SHA-256', enc.encode(text));
+  return Array.from(new Uint8Array(buffer))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+async function deriveAesKey(password: string, salt: Uint8Array): Promise<CryptoKey> {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(password),
+    'PBKDF2',
+    false,
+    ['deriveKey']
+  );
+  return await crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt: salt as any,
+      iterations: 100000,
+      hash: 'SHA-256',
+    },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
 
 class OfflineSyncService {
   private status: SyncStatus = 'ONLINE';
   private listeners: Set<StatusListener> = new Set();
   private isSyncing = false;
   private checkInterval: any = null;
+  private retryDelayMs = 2000;
 
   constructor() {
     if (typeof window !== 'undefined') {
-      window.addEventListener('online', () => this.checkConnectivity());
+      window.addEventListener('online', () => this.handleNetworkRecovery());
       window.addEventListener('offline', () => this.setStatus('OFFLINE'));
 
-      // Periodic lightweight connectivity probe every 15 seconds
+      // Periodic connectivity & sync probe every 15 seconds
       this.checkInterval = setInterval(() => {
         this.checkConnectivity();
       }, 15000);
 
-      // Initial check on load
+      // Initial check on startup
       setTimeout(() => this.checkConnectivity(), 1000);
     }
   }
@@ -74,7 +117,7 @@ class OfflineSyncService {
     }
   }
 
-  // 1. Connectivity Probe: distinguishes online, offline, and server errors
+  // 1. Connectivity Probe: Distinguishes online, offline, and server errors
   public async checkConnectivity(): Promise<boolean> {
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
       this.setStatus('OFFLINE');
@@ -88,10 +131,8 @@ class OfflineSyncService {
         const failedCount = await this.getFailedCount();
         this.setStatus(failedCount > 0 ? 'SYNC_ERROR' : 'ONLINE');
 
-        // Automatically trigger sync if returning online from an offline state
         if (prevStatus === 'OFFLINE') {
-          this.triggerSync();
-          this.warmLocalCache();
+          this.handleNetworkRecovery();
         }
         return true;
       }
@@ -103,9 +144,15 @@ class OfflineSyncService {
     }
   }
 
+  private async handleNetworkRecovery() {
+    await this.checkConnectivity();
+    await this.warmLocalCache();
+    await this.triggerSync();
+  }
+
   // 2. Cache Warming: Seed IndexedDB with catalog items when online
   public async warmLocalCache(): Promise<void> {
-    if (this.status === 'OFFLINE') return;
+    if (typeof navigator !== 'undefined' && !navigator.onLine) return;
 
     try {
       // Warm Products
@@ -215,34 +262,58 @@ class OfflineSyncService {
       createdAt: nowIso,
     };
 
-    // Atomic local transaction: update local inventory and save pending invoice
-    await offlineDb.transaction('rw', [offlineDb.cachedProducts, offlineDb.pendingInvoices, offlineDb.syncQueue], async () => {
-      // Local stock decrement for items sold
-      for (const item of pendingInvoice.items) {
-        if (item.itemId) {
-          const cached = await offlineDb.cachedProducts.where('itemId').equals(item.itemId.toUpperCase()).first();
-          if (cached) {
-            const newQty = Math.max(0, cached.quantity - item.qty);
-            await offlineDb.cachedProducts.update(cached.id, { quantity: newQty });
+    // Atomic local transaction: update local inventory and save pending invoice & outbox queue
+    await offlineDb.transaction(
+      'rw',
+      [
+        offlineDb.cachedProducts,
+        offlineDb.pendingInvoices,
+        offlineDb.syncQueue,
+        offlineDb.localStockMovements,
+      ],
+      async () => {
+        // Local stock decrement and audit movement for items sold
+        for (const item of pendingInvoice.items) {
+          if (item.itemId) {
+            const cached = await offlineDb.cachedProducts
+              .where('itemId')
+              .equals(item.itemId.toUpperCase())
+              .first();
+            if (cached) {
+              const newQty = Math.max(0, cached.quantity - item.qty);
+              await offlineDb.cachedProducts.update(cached.id, { quantity: newQty });
+
+              // Record local stock movement audit
+              await offlineDb.localStockMovements.put({
+                id: crypto.randomUUID(),
+                itemId: item.itemId.toUpperCase(),
+                quantity: -item.qty,
+                unitPrice: item.rate,
+                buyingPrice: cached.buyingPrice || 0,
+                movedAt: nowIso,
+                invoiceId: clientTxId,
+                status: 'PENDING',
+              });
+            }
           }
         }
-      }
 
-      await offlineDb.pendingInvoices.put(pendingInvoice);
-      await offlineDb.syncQueue.put({
-        id: clientTxId,
-        clientOpId: clientTxId,
-        operationType: 'CREATE_INVOICE',
-        payload: {
-          ...invoiceData,
-          clientTxId,
-          provisionalBillNo,
-        },
-        createdAt: nowIso,
-        retryCount: 0,
-        status: 'PENDING',
-      });
-    });
+        await offlineDb.pendingInvoices.put(pendingInvoice);
+        await offlineDb.syncQueue.put({
+          id: clientTxId,
+          clientOpId: clientTxId,
+          operationType: 'CREATE_INVOICE',
+          payload: {
+            ...invoiceData,
+            clientTxId,
+            provisionalBillNo,
+          },
+          createdAt: nowIso,
+          retryCount: 0,
+          status: 'PENDING',
+        });
+      }
+    );
 
     this.notify();
 
@@ -298,6 +369,15 @@ class OfflineSyncService {
           status: 'RESOLVED',
         });
 
+        // Mark local stock movement as synced
+        const movements = await offlineDb.localStockMovements
+          .where('invoiceId')
+          .equals(inv.clientTxId)
+          .toArray();
+        for (const mov of movements) {
+          await offlineDb.localStockMovements.update(mov.id, { status: 'SYNCED' });
+        }
+
         this.notify();
         return true;
       }
@@ -317,9 +397,29 @@ class OfflineSyncService {
     }
   }
 
-  // 6. Trigger Full Outbox Synchronization
+  // 6. Trigger Full Outbox Synchronization (Multi-Tab Coordinated)
   public async triggerSync(): Promise<{ synced: number; failed: number }> {
     if (this.isSyncing) return { synced: 0, failed: 0 };
+
+    // Multi-tab coordination using Web Locks API if supported
+    if (typeof navigator !== 'undefined' && 'locks' in navigator) {
+      return (navigator as any).locks.request(
+        'isuru_pos_sync_worker_lock',
+        { ifAvailable: true },
+        async (lock: any) => {
+          if (!lock) {
+            console.log('[OfflineSync] Another browser tab is executing sync. Skipping.');
+            return { synced: 0, failed: 0 };
+          }
+          return this.executeSyncBatch();
+        }
+      );
+    }
+
+    return this.executeSyncBatch();
+  }
+
+  private async executeSyncBatch(): Promise<{ synced: number; failed: number }> {
     this.isSyncing = true;
     this.setStatus('SYNCING');
 
@@ -336,8 +436,12 @@ class OfflineSyncService {
         const success = await this.syncSingleInvoice(inv);
         if (success) {
           synced++;
+          this.retryDelayMs = 2000; // Reset backoff on success
         } else {
           failed++;
+          // Exponential backoff up to 30 seconds
+          this.retryDelayMs = Math.min(30000, Math.round(this.retryDelayMs * 1.5));
+          break; // Stop batch on first network/server failure to avoid hammering
         }
       }
 
@@ -362,10 +466,145 @@ class OfflineSyncService {
     return { synced, failed };
   }
 
-  // 7. Emergency Export for Backup Recovery
-  public async exportPendingInvoices(): Promise<string> {
-    const allPending = await offlineDb.pendingInvoices.toArray();
-    return JSON.stringify(allPending, null, 2);
+  // 7. Secure Recovery Backup Export (With optional AES-GCM Encryption)
+  public async exportRecoveryBackup(passphrase?: string): Promise<string> {
+    const pendingInvoices = await offlineDb.pendingInvoices.toArray();
+    const syncQueue = await offlineDb.syncQueue.toArray();
+    const movements = await offlineDb.localStockMovements.toArray();
+    const metadata = await offlineDb.syncMetadata.toArray();
+
+    const payloadObj = {
+      pendingInvoices,
+      syncQueue,
+      movements,
+      metadata,
+    };
+    const payloadStr = JSON.stringify(payloadObj);
+    const checksum = await calculateSha256(payloadStr);
+
+    let finalPayload = payloadStr;
+    let isEncrypted = false;
+    let saltHex: string | undefined;
+    let ivHex: string | undefined;
+
+    if (passphrase && passphrase.trim()) {
+      const salt = crypto.getRandomValues(new Uint8Array(16));
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const key = await deriveAesKey(passphrase.trim(), salt);
+      const encoded = new TextEncoder().encode(payloadStr);
+      const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, encoded);
+
+      finalPayload = btoa(String.fromCharCode(...new Uint8Array(encrypted)));
+      isEncrypted = true;
+      saltHex = Array.from(salt).map((b) => b.toString(16).padStart(2, '0')).join('');
+      ivHex = Array.from(iv).map((b) => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    const backupContainer = {
+      app: 'ISURU_SERVICE_POS_BACKUP',
+      schemaVersion: '2.0.0',
+      exportedAt: new Date().toISOString(),
+      checksum,
+      isEncrypted,
+      salt: saltHex,
+      iv: ivHex,
+      data: finalPayload,
+    };
+
+    return JSON.stringify(backupContainer, null, 2);
+  }
+
+  // 8. Secure Recovery Backup Restore (With Preview and Duplicate Protection)
+  public async restoreRecoveryBackup(
+    backupJson: string,
+    passphrase?: string,
+    previewOnly = false
+  ): Promise<{
+    success: boolean;
+    error?: string;
+    invoicesCount: number;
+    queueCount: number;
+    duplicatesCount: number;
+  }> {
+    try {
+      const container = JSON.parse(backupJson);
+      if (container.app !== 'ISURU_SERVICE_POS_BACKUP') {
+        return { success: false, error: 'Invalid backup file format.', invoicesCount: 0, queueCount: 0, duplicatesCount: 0 };
+      }
+
+      let payloadStr = container.data;
+      if (container.isEncrypted) {
+        if (!passphrase) {
+          return { success: false, error: 'Passphrase is required to decrypt this backup.', invoicesCount: 0, queueCount: 0, duplicatesCount: 0 };
+        }
+        try {
+          const salt = new Uint8Array(container.salt.match(/.{1,2}/g)!.map((byte: string) => parseInt(byte, 16)));
+          const iv = new Uint8Array(container.iv.match(/.{1,2}/g)!.map((byte: string) => parseInt(byte, 16)));
+          const key = await deriveAesKey(passphrase.trim(), salt);
+          const encryptedBytes = Uint8Array.from(atob(payloadStr), (c) => c.charCodeAt(0));
+          const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, encryptedBytes);
+          payloadStr = new TextDecoder().decode(decrypted);
+        } catch {
+          return { success: false, error: 'Decryption failed. Incorrect passphrase or corrupted data.', invoicesCount: 0, queueCount: 0, duplicatesCount: 0 };
+        }
+      }
+
+      // Verify SHA256 integrity checksum
+      const actualChecksum = await calculateSha256(payloadStr);
+      if (actualChecksum !== container.checksum) {
+        return { success: false, error: 'Checksum verification failed! Backup file is corrupted or tampered.', invoicesCount: 0, queueCount: 0, duplicatesCount: 0 };
+      }
+
+      const payload = JSON.parse(payloadStr);
+      const incomingInvoices: PendingInvoice[] = payload.pendingInvoices || [];
+      const incomingQueue: SyncQueueItem[] = payload.payload?.syncQueue || payload.syncQueue || [];
+      const incomingMovements: LocalStockMovement[] = payload.movements || [];
+
+      // Check duplicates against existing database
+      const existingInvoices = await offlineDb.pendingInvoices.toArray();
+      const existingIds = new Set(existingInvoices.map((inv) => inv.id));
+
+      const newInvoices = incomingInvoices.filter((inv) => !existingIds.has(inv.id));
+      const duplicatesCount = incomingInvoices.length - newInvoices.length;
+
+      if (previewOnly) {
+        return {
+          success: true,
+          invoicesCount: newInvoices.length,
+          queueCount: incomingQueue.length,
+          duplicatesCount,
+        };
+      }
+
+      // Restore without overwriting existing newer records
+      await offlineDb.transaction('rw', [offlineDb.pendingInvoices, offlineDb.syncQueue, offlineDb.localStockMovements], async () => {
+        if (newInvoices.length > 0) {
+          await offlineDb.pendingInvoices.bulkPut(newInvoices);
+        }
+        for (const item of incomingQueue) {
+          const exists = await offlineDb.syncQueue.get(item.id);
+          if (!exists) {
+            await offlineDb.syncQueue.put(item);
+          }
+        }
+        if (incomingMovements.length > 0) {
+          await offlineDb.localStockMovements.bulkPut(incomingMovements);
+        }
+      });
+
+      this.notify();
+      // Resume background sync if online
+      this.checkConnectivity();
+
+      return {
+        success: true,
+        invoicesCount: newInvoices.length,
+        queueCount: incomingQueue.length,
+        duplicatesCount,
+      };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Restoration failed.', invoicesCount: 0, queueCount: 0, duplicatesCount: 0 };
+    }
   }
 }
 

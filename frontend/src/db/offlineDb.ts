@@ -92,6 +92,29 @@ export interface SyncMetadata {
   updatedAt: string;
 }
 
+export interface LocalStockMovement {
+  id: string;
+  itemId: string;
+  quantity: number;
+  unitPrice: number;
+  buyingPrice: number;
+  movedAt: string;
+  invoiceId?: string;
+  status: 'PENDING' | 'SYNCED';
+}
+
+export interface ApplicationSetting {
+  key: string;
+  value: any;
+  updatedAt: string;
+}
+
+export interface DeviceMetadata {
+  key: string;
+  value: any;
+  updatedAt: string;
+}
+
 export class IsuruPosDatabase extends Dexie {
   cachedProducts!: Table<CachedProduct, string>;
   cachedServices!: Table<CachedService, string>;
@@ -100,6 +123,9 @@ export class IsuruPosDatabase extends Dexie {
   pendingInvoices!: Table<PendingInvoice, string>;
   syncQueue!: Table<SyncQueueItem, string>;
   syncMetadata!: Table<SyncMetadata, string>;
+  localStockMovements!: Table<LocalStockMovement, string>;
+  applicationSettings!: Table<ApplicationSetting, string>;
+  deviceMetadata!: Table<DeviceMetadata, string>;
 
   constructor() {
     super('isuru_pos_offline_db');
@@ -112,6 +138,19 @@ export class IsuruPosDatabase extends Dexie {
       pendingInvoices: 'id, &clientTxId, billNo, status, createdAt',
       syncQueue: 'id, &clientOpId, operationType, status, createdAt',
       syncMetadata: 'key',
+    });
+
+    this.version(2).stores({
+      cachedProducts: 'id, &itemId, itemName, brand',
+      cachedServices: 'id, [category+name], category, name',
+      cachedCustomers: 'id, name, phone, nic',
+      cachedVehicles: 'id, customerId, vehicleNo, vehicleType',
+      pendingInvoices: 'id, &clientTxId, billNo, status, createdAt',
+      syncQueue: 'id, &clientOpId, operationType, status, createdAt',
+      syncMetadata: 'key',
+      localStockMovements: 'id, itemId, movedAt, status',
+      applicationSettings: 'key',
+      deviceMetadata: 'key',
     });
   }
 }
