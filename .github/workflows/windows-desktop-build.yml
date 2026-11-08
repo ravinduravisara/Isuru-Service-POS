@@ -85,6 +85,11 @@ jobs:
           npm run build:electron
           node scripts/prepare-build.mjs
 
+      - name: Prune Backend Dev Dependencies for Production Packaging
+        run: |
+          cd backend
+          npm prune --omit=dev
+
       - name: Package Windows NSIS Installer (electron-builder)
         run: |
           cd desktop
