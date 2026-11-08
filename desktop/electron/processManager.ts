@@ -246,6 +246,7 @@ synchronous_commit = on
     this.postgresProcess = spawn(postgresExe, ['-D', pgDataDir, '-p', String(this.postgresPort)], {
       detached: false,
       stdio: ['ignore', logFd, logFd],
+      windowsHide: true,
     });
 
     this.postgresProcess.on('error', (err) => {
@@ -258,6 +259,97 @@ synchronous_commit = on
     }
 
     onProgress?.('Local PostgreSQL engine is running.');
+  }
+
+  /**
+   * Ensure database 'isuru_pos' exists and all Prisma migrations are applied.
+   */
+  public static async ensureDatabaseAndSchema(onProgress?: (message: string) => void): Promise<void> {
+    onProgress?.('Verifying database & schema migrations...');
+    const pgBinDir = this.getPostgresBinDir();
+    const psqlExe = path.join(pgBinDir, process.platform === 'win32' ? 'psql.exe' : 'psql');
+
+    if (!fs.existsSync(psqlExe)) {
+      console.warn(`[ProcessManager] psql binary not found at ${psqlExe}. Skipping automated migration check.`);
+      return;
+    }
+
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      PGPASSWORD: this.dbPassword || 'Isuru2026POS',
+    };
+
+    const runPsql = (db: string, sqlOrFile: string, isFile = false): Promise<string> => {
+      return new Promise((resolve, reject) => {
+        const args = [
+          '-h', '127.0.0.1',
+          '-p', String(this.postgresPort),
+          '-U', 'isuru_pos_user',
+          '-d', db,
+          '-t',
+          '-A',
+        ];
+        if (isFile) {
+          args.push('-f', sqlOrFile);
+        } else {
+          args.push('-c', sqlOrFile);
+        }
+
+        execFile(psqlExe, args, { env, windowsHide: true }, (err, stdout, stderr) => {
+          if (err) {
+            console.error(`[ProcessManager] psql error (${sqlOrFile}):`, stderr || err.message);
+            reject(new Error(`psql error: ${stderr || err.message}`));
+          } else {
+            resolve(stdout.trim());
+          }
+        });
+      });
+    };
+
+    // 1. Ensure 'isuru_pos' database exists
+    try {
+      const dbCheck = await runPsql('postgres', "SELECT 1 FROM pg_database WHERE datname = 'isuru_pos';");
+      if (dbCheck !== '1') {
+        onProgress?.('Creating local database isuru_pos...');
+        await runPsql('postgres', 'CREATE DATABASE isuru_pos;');
+        console.log('[ProcessManager] Database isuru_pos created successfully.');
+      }
+    } catch (err: any) {
+      console.warn('[ProcessManager] Database check/create note:', err.message);
+    }
+
+    // 2. Locate migrations
+    const isPackaged = app.isPackaged;
+    const migrationsBase = isPackaged
+      ? path.join(process.resourcesPath, 'backend', 'prisma', 'migrations')
+      : path.join(__dirname, '..', '..', '..', 'backend', 'prisma', 'migrations');
+
+    if (fs.existsSync(migrationsBase)) {
+      try {
+        const entries = fs.readdirSync(migrationsBase, { withFileTypes: true });
+        const migrationDirs = entries
+          .filter((e) => e.isDirectory())
+          .map((e) => e.name)
+          .sort(); // Run 20261107..., 20261108... in chronological order
+
+        for (const mDir of migrationDirs) {
+          const sqlFile = path.join(migrationsBase, mDir, 'migration.sql');
+          if (fs.existsSync(sqlFile)) {
+            onProgress?.(`Applying schema migration ${mDir}...`);
+            try {
+              await runPsql('isuru_pos', sqlFile, true);
+              console.log(`[ProcessManager] Applied migration: ${mDir}`);
+            } catch (mErr: any) {
+              console.warn(`[ProcessManager] Migration notice for ${mDir}:`, mErr.message);
+            }
+          }
+        }
+      } catch (err: any) {
+        console.error('[ProcessManager] Error applying migrations:', err);
+      }
+    }
+
+    onProgress?.('Local database and tables verified.');
   }
 
   /**
@@ -301,6 +393,7 @@ synchronous_commit = on
       env,
       detached: false,
       stdio: ['ignore', logFd, logFd],
+      windowsHide: true,
     });
 
     this.backendProcess.on('error', (err) => {
@@ -309,10 +402,21 @@ synchronous_commit = on
 
     // Wait for health endpoint
     const backendUrl = `http://127.0.0.1:${this.backendPort}`;
-    const ready = await this.waitForHttpHealth(`${backendUrl}/api/v1/health`, 15000);
+    const ready = await this.waitForHttpHealth(`${backendUrl}/api/v1/health`, 25000);
 
     if (!ready) {
-      throw new Error(`Local backend failed to report healthy at ${backendUrl}/api/v1/health.`);
+      let logTail = '';
+      try {
+        if (fs.existsSync(logFile)) {
+          const logContent = fs.readFileSync(logFile, 'utf8');
+          logTail = logContent.slice(-1500).trim();
+        }
+      } catch {}
+      throw new Error(
+        `Local backend failed to report healthy at ${backendUrl}/api/v1/health.${
+          logTail ? `\n\nBackend Output Log:\n${logTail}` : ''
+        }`
+      );
     }
 
     onProgress?.('Local POS backend is ready.');

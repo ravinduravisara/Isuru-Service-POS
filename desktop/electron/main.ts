@@ -256,12 +256,17 @@ app.whenReady().then(async () => {
       console.log(`[Startup] ${msg}`);
     });
 
-    // 3. Start local Express API backend
+    // 3. Ensure database 'isuru_pos' exists and schema migrations are applied
+    await ProcessManager.ensureDatabaseAndSchema((msg) => {
+      console.log(`[Startup] ${msg}`);
+    });
+
+    // 4. Start local Express API backend
     const backendUrl = await ProcessManager.startBackend((msg) => {
       console.log(`[Startup] ${msg}`);
     });
 
-    // 4. Create and show primary application window
+    // 5. Create and show primary application window
     mainWindow = createMainWindow(backendUrl);
   } catch (startupError: any) {
     console.error('[Startup Fatal Error]', startupError);
