@@ -28,7 +28,10 @@ extraResources:
     to: backend/node_modules
     filter:
       - "**/*"
+      - "!**/.bin"
+      - "!**/.bin/**"
       - "!**/.cache"
+      - "!**/.cache/**"
       - "!**/test"
       - "!**/tests"
       - "!**/*.ts"
@@ -46,7 +49,6 @@ win:
       arch:
         - x64
   artifactName: "ISURU-POS-Setup.${ext}"
-  requestedExecutionLevel: asInvoker
 
 nsis:
   oneClick: false
@@ -55,6 +57,5 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: "ISURU Service POS"
-  include: windows/installer/installer.nsh
   uninstallDisplayName: "ISURU Service POS"
   deleteAppDataOnUninstall: false
